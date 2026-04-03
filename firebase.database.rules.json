@@ -1,0 +1,23 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "rooms": {
+      ".read": true,
+      ".write": true
+    },
+    "profiles": {
+      ".read": true,
+      ".indexOn": ["rating"],
+      "$uid": {
+        ".write": "auth != null && (auth.uid === $uid || auth.uid === 'VD5Mm7c3OuY9HKhhKahgmuE2N2q2' || auth.uid === '4wXQMSTK29dbKKpMQLKENIT9TOD2')"
+      }
+    },
+    "usernames": {
+      ".read": true,
+      "$name": {
+        ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (data.exists() && data.val() === auth.uid && newData.val() === auth.uid))"
+      }
+    }
+  }
+}
