@@ -2,6 +2,8 @@
 
 A browser volleyball game with local play, bot play, online multiplayer, and mobile touch controls.
 
+https://ghostriley2528.github.io/SPIKE/
+
 ## Setup
 
 1. Install Node.js LTS from `https://nodejs.org`
