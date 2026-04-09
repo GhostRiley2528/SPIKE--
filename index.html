@@ -845,7 +845,7 @@ const BOT_MODE_INFO={
   easy:{
     key:'easy',
     label:'Guardian',
-    note:'Defensive reads, steadier receives, safer sets.',
+    note:'Safer receives, simpler rallies, and more rescue balls.',
     color:'#00ff88',
     bg:'#00ff8820',
     errorScale:0.74,
@@ -856,9 +856,9 @@ const BOT_MODE_INFO={
     blockChance:0.8,
     blockHold:360,
     tipChance:0.08,
-    quickKill:0.16,
-    secondTouchSet:0.92,
-    receiveSetChance:0.12,
+    quickKill:0.08,
+    secondTouchSet:0.68,
+    receiveSetChance:0.06,
     spikeNudge:1.55,
     tipNudge:0.75,
     veilChance:0,
@@ -868,7 +868,7 @@ const BOT_MODE_INFO={
   med:{
     key:'med',
     label:'Trickster',
-    note:'Mixups, sneaky tips, and a short veil on your side.',
+    note:'Balanced three-touch rallies, mixups, and sneaky tips.',
     color:'#ffcc02',
     bg:'#ffcc0220',
     errorScale:0.48,
@@ -878,10 +878,10 @@ const BOT_MODE_INFO={
     jumpBias:0.08,
     blockChance:0.76,
     blockHold:330,
-    tipChance:0.26,
-    quickKill:0.34,
-    secondTouchSet:0.7,
-    receiveSetChance:0.28,
+    tipChance:0.22,
+    quickKill:0.18,
+    secondTouchSet:0.82,
+    receiveSetChance:0.16,
     spikeNudge:2.45,
     tipNudge:1.1,
     veilChance:0.34,
@@ -891,7 +891,7 @@ const BOT_MODE_INFO={
   hard:{
     key:'hard',
     label:'Crusher',
-    note:'Aggressive spikes, firmer blocks, stronger pressure.',
+    note:'Disciplined three-touch offense, smart blocks, heavy pressure.',
     color:'#ff5722',
     bg:'#ff572220',
     errorScale:0.22,
@@ -902,8 +902,8 @@ const BOT_MODE_INFO={
     blockChance:0.92,
     blockHold:390,
     tipChance:0.14,
-    quickKill:0.54,
-    secondTouchSet:0.62,
+    quickKill:0.28,
+    secondTouchSet:0.92,
     receiveSetChance:0.22,
     spikeNudge:3.45,
     tipNudge:1.45,
@@ -1055,7 +1055,7 @@ let slotStatMul=[{...DEF_STAT_MUL},{...DEF_STAT_MUL},{...DEF_STAT_MUL},{...DEF_S
 let geltCoins=0,lastMatchCoinReward=0;
 let matchRewardApplied=false,packOpeningActive=false;
 let matchHistoryRecorded=false,inventoryPreviewId='';
-let progressionStats=null,matchHistory=[];
+let progressionStats=null,progressionDevices={},matchHistory=[];
 let frameNow=0;
 const MAX_BALL_TRAIL=12;
 const MAX_PARTS=90;
@@ -1086,6 +1086,7 @@ const GHOST_UIDS=new Set([
   'VD5Mm7c3OuY9HKhhKahgmuE2N2q2',
   '4wXQMSTK29dbKKpMQLKENIT9TOD2'
 ]);
+const LOCAL_DEVICE_ID_KEY='spike.deviceId';
 const LOCAL_ACCESSORIES_KEY='spike.localAccessories';
 const LOCAL_GELT_KEY='spike.localGeltCoins';
 const LOCAL_PROGRESS_KEY='spike.localProgression';
@@ -1205,6 +1206,90 @@ function sanitizeProgressionStats(raw){
   Object.keys(base).forEach(key=>{base[key]=sanitizeCoinValue(src[key]);});
   return base;
 }
+function emptyProgressionDevices(){
+  return{};
+}
+function progressionStatsMax(a,b){
+  const left=sanitizeProgressionStats(a),right=sanitizeProgressionStats(b),merged=defaultProgressionStats();
+  Object.keys(merged).forEach(key=>{merged[key]=Math.max(left[key],right[key]);});
+  return merged;
+}
+function progressionStatsIsZero(raw){
+  const stats=sanitizeProgressionStats(raw);
+  return Object.keys(stats).every(key=>stats[key]===0);
+}
+function getLocalDeviceId(){
+  try{
+    let id=localStorage.getItem(LOCAL_DEVICE_ID_KEY);
+    if(!id){
+      id=`dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;
+      localStorage.setItem(LOCAL_DEVICE_ID_KEY,id);
+    }
+    return id;
+  }catch(e){
+    return'guest-device';
+  }
+}
+function sanitizeProgressionDevices(raw){
+  const clean=emptyProgressionDevices();
+  const src=raw&&typeof raw==='object'?raw:{};
+  Object.keys(src).forEach(key=>{
+    const safeKey=String(key||'').replace(/[^a-z0-9_-]/gi,'').slice(0,48);
+    if(!safeKey)return;
+    clean[safeKey]=sanitizeProgressionStats(src[key]);
+  });
+  return clean;
+}
+function deriveProgressionStats(devices,history){
+  const merged=defaultProgressionStats();
+  Object.values(sanitizeProgressionDevices(devices)).forEach(stats=>{
+    merged.packsOpened+=stats.packsOpened;
+    merged.duplicateMelts+=stats.duplicateMelts;
+    merged.duplicateGelt+=stats.duplicateGelt;
+    merged.totalGeltEarned+=stats.totalGeltEarned;
+    merged.totalGeltSpent+=stats.totalGeltSpent;
+    merged.matchWins+=stats.matchWins;
+    merged.matchLosses+=stats.matchLosses;
+    merged.bestWinStreak=Math.max(merged.bestWinStreak,stats.bestWinStreak);
+    merged.currentWinStreak=Math.max(merged.currentWinStreak,stats.currentWinStreak);
+  });
+  const cleanHistory=sanitizeMatchHistory(history);
+  if(cleanHistory.length){
+    let current=0,best=merged.bestWinStreak,run=0;
+    cleanHistory.forEach((entry,idx)=>{
+      if(entry.result==='WIN'){
+        run++;
+        if(idx===current)current++;
+        best=Math.max(best,run);
+      }else{
+        run=0;
+      }
+    });
+    const currentStreakComplete=cleanHistory.length<MATCH_HISTORY_LIMIT||cleanHistory.some(entry=>entry.result!=='WIN');
+    merged.currentWinStreak=currentStreakComplete?current:Math.max(merged.currentWinStreak,current);
+    merged.bestWinStreak=best;
+  }
+  return sanitizeProgressionStats(merged);
+}
+function normalizeProgressionState(raw,legacyKey='legacy'){
+  const cleanHistory=sanitizeMatchHistory(raw&&raw.history);
+  const cleanDevices=sanitizeProgressionDevices(raw&&raw.devices);
+  const legacyStats=sanitizeProgressionStats(raw&&raw.stats);
+  if(!Object.keys(cleanDevices).length&&!progressionStatsIsZero(legacyStats))cleanDevices[legacyKey]=legacyStats;
+  return{
+    devices:cleanDevices,
+    history:cleanHistory,
+    stats:deriveProgressionStats(cleanDevices,cleanHistory)
+  };
+}
+function updateCurrentDeviceProgress(mutator){
+  if(typeof mutator!=='function')return;
+  const deviceId=getLocalDeviceId();
+  const next=sanitizeProgressionStats(progressionDevices&&progressionDevices[deviceId]);
+  mutator(next);
+  progressionDevices={...sanitizeProgressionDevices(progressionDevices),[deviceId]:sanitizeProgressionStats(next)};
+  progressionStats=deriveProgressionStats(progressionDevices,matchHistory);
+}
 function sanitizeMatchHistoryEntry(raw){
   const src=raw&&typeof raw==='object'?raw:{};
   const result=String(src.result||'LOSS').toUpperCase()==='WIN'?'WIN':'LOSS';
@@ -1234,49 +1319,51 @@ function loadLocalProgressionState(uid=currentUser&&currentUser.uid){
   try{
     const raw=localStorage.getItem(scopedStorageKey(LOCAL_PROGRESS_KEY,uid))||(!uid?localStorage.getItem(LOCAL_PROGRESS_KEY):null);
     const parsed=raw?JSON.parse(raw):null;
-    return{
-      stats:sanitizeProgressionStats(parsed&&parsed.stats),
-      history:sanitizeMatchHistory(parsed&&parsed.history)
-    };
+    return normalizeProgressionState(parsed,getLocalDeviceId());
   }catch(e){
-    return{stats:defaultProgressionStats(),history:[]};
+    return normalizeProgressionState(null,getLocalDeviceId());
   }
 }
 function writeLocalProgressionState(state,uid=currentUser&&currentUser.uid){
   try{
+    const normalized=normalizeProgressionState(state,getLocalDeviceId());
     const clean=JSON.stringify({
-      stats:sanitizeProgressionStats(state&&state.stats),
-      history:sanitizeMatchHistory(state&&state.history)
+      stats:normalized.stats,
+      history:normalized.history,
+      devices:normalized.devices
     });
     localStorage.setItem(scopedStorageKey(LOCAL_PROGRESS_KEY,uid),clean);
     if(!uid)localStorage.setItem(LOCAL_PROGRESS_KEY,clean);
   }catch(e){}
 }
 function snapshotProgressionState(){
+  const devices=sanitizeProgressionDevices(progressionDevices);
+  const history=sanitizeMatchHistory(matchHistory);
   return{
-    stats:sanitizeProgressionStats(progressionStats),
-    history:sanitizeMatchHistory(matchHistory)
+    stats:deriveProgressionStats(devices,history),
+    history,
+    devices
   };
 }
 function mergeProgressionState(primary,fallback){
-  const a={
-    stats:sanitizeProgressionStats(primary&&primary.stats),
-    history:sanitizeMatchHistory(primary&&primary.history)
-  };
-  const b={
-    stats:sanitizeProgressionStats(fallback&&fallback.stats),
-    history:sanitizeMatchHistory(fallback&&fallback.history)
-  };
-  const mergedStats=defaultProgressionStats();
-  Object.keys(mergedStats).forEach(key=>{mergedStats[key]=Math.max(a.stats[key],b.stats[key]);});
+  const a=normalizeProgressionState(primary,'remote-legacy');
+  const b=normalizeProgressionState(fallback,getLocalDeviceId());
+  const mergedDevices={...a.devices};
+  Object.entries(b.devices).forEach(([key,stats])=>{
+    mergedDevices[key]=progressionStatsMax(mergedDevices[key],stats);
+  });
+  const mergedHistory=sanitizeMatchHistory([...a.history,...b.history]);
   return{
-    stats:mergedStats,
-    history:sanitizeMatchHistory([...a.history,...b.history])
+    devices:mergedDevices,
+    history:mergedHistory,
+    stats:deriveProgressionStats(mergedDevices,mergedHistory)
   };
 }
 function applyProgressionState(state){
-  progressionStats=sanitizeProgressionStats(state&&state.stats);
-  matchHistory=sanitizeMatchHistory(state&&state.history);
+  const normalized=normalizeProgressionState(state,getLocalDeviceId());
+  progressionDevices=normalized.devices;
+  matchHistory=normalized.history;
+  progressionStats=normalized.stats;
 }
 function persistProgressionState({remote=true}={}){
   const snapshot=snapshotProgressionState();
@@ -1284,11 +1371,13 @@ function persistProgressionState({remote=true}={}){
   if(currentProfile&&typeof currentProfile==='object'){
     currentProfile.progressionStats=snapshot.stats;
     currentProfile.matchHistory=snapshot.history;
+    currentProfile.progressionDevices=snapshot.devices;
   }
   if(remote&&currentUser&&fbInit()){
     fbDb.ref(`${PROFILE_PATH}/${currentUser.uid}`).update({
       progressionStats:snapshot.stats,
-      matchHistory:snapshot.history
+      matchHistory:snapshot.history,
+      progressionDevices:snapshot.devices
     }).catch(()=>{});
   }
 }
@@ -1331,13 +1420,15 @@ function updateHistoryUI(){
 function recordMatchHistory(win,stats,longestRally,reward){
   if(matchHistoryRecorded)return;
   matchHistoryRecorded=true;
-  if(!progressionStats)progressionStats=defaultProgressionStats();
   const localSide=localControlledSide();
   const didWin=win===localSide;
-  progressionStats.matchWins+=didWin?1:0;
-  progressionStats.matchLosses+=didWin?0:1;
-  progressionStats.currentWinStreak=didWin?progressionStats.currentWinStreak+1:0;
-  progressionStats.bestWinStreak=Math.max(progressionStats.bestWinStreak,progressionStats.currentWinStreak);
+  const nextStreak=didWin?(progressionStats&&progressionStats.currentWinStreak||0)+1:0;
+  updateCurrentDeviceProgress(deviceStats=>{
+    deviceStats.matchWins+=didWin?1:0;
+    deviceStats.matchLosses+=didWin?0:1;
+    deviceStats.currentWinStreak=nextStreak;
+    deviceStats.bestWinStreak=Math.max(deviceStats.bestWinStreak,nextStreak);
+  });
   const sideIdx=localSide===0?0:1;
   const oppIdx=sideIdx===0?1:0;
   const modeLabel=gmode==='ai'?'vs BOT':gmode==='1v1'?'1v1 Local':gmode==='online'?'Online':'Match';
@@ -1377,10 +1468,11 @@ function setGeltCoins(v,{saveLocal=true}={}){
   updateEconomyUI();
 }
 function addGeltCoins(amount,{syncProfile=true}={}){
-  if(!progressionStats)progressionStats=defaultProgressionStats();
   const delta=sanitizeCoinDelta(amount);
-  if(delta>0)progressionStats.totalGeltEarned+=delta;
-  else if(delta<0)progressionStats.totalGeltSpent+=Math.abs(delta);
+  updateCurrentDeviceProgress(deviceStats=>{
+    if(delta>0)deviceStats.totalGeltEarned+=delta;
+    else if(delta<0)deviceStats.totalGeltSpent+=Math.abs(delta);
+  });
   const next=Math.max(0,geltCoins+delta);
   setGeltCoins(next);
   persistProgressionState({remote:syncProfile});
@@ -2090,9 +2182,13 @@ function checkLocalBlocks(){
     const br=blockRangeFor(slot);
     const dist=Math.sqrt((ball.x-cx2)**2+(ball.y-cy2)**2);
     if(dist<br){
+      const rawNx=dist>0?(ball.x-cx2)/dist:(side===0?-1:1);
+      const rawNy=dist>0?(ball.y-cy2)/dist:-0.35;
+      const norm=Math.max(1,Math.sqrt(rawNx*rawNx+rawNy*rawNy));
+      const nx2=rawNx/norm,ny2=rawNy/norm;
       ball.vx*=-0.9;ball.vy=Math.min(ball.vy,-4);
-      ball.x=cx2+(ball.x-cx2)/dist*(br+1);
-      ball.y=cy2+(ball.y-cy2)/dist*(br+1);
+      ball.x=cx2+nx2*(br+1);
+      ball.y=cy2+ny2*(br+1);
       sndBlock();shake(6,8);
       const sf=document.getElementById('sflash');sf.classList.add('block');setTimeout(()=>sf.classList.remove('block'),100);
       doFlash('BLOCK!','#00ff88');spawnParts(ball.x,ball.y,'#00ff88',16);
@@ -2115,9 +2211,11 @@ const FB_CONFIG={
 let fbApp=null,fbDb=null,fbRoom=null,fbRoomRef=null,fbListeners=[];
 let fbAuth=null,authWatcherBound=false,currentUser=null,currentProfile=null,authMode='signup';
 let lobbyMode='1v1',activeTab='create';
-let fbStateThrottle=0;
+let fbStateThrottle=0,authSubmitBusy=false,onlineRoomRecovery=false;
 const PROFILE_PATH='profiles';
+const PUBLIC_PROFILE_PATH='publicProfiles';
 const USERNAME_PATH='usernames';
+const ONLINE_ROOM_VERSION='2026-04-08-online-sync-2';
 
 function fbInit(){
   if(fbApp)return true;
@@ -2137,14 +2235,112 @@ function fbInit(){
   }
 }
 
-function fbOff(){
+function clearFbListeners(){
   fbListeners.forEach(fn=>fn());
   fbListeners=[];
+}
+function fbOff({preserveRoom=false}={}){
+  clearFbListeners();
+  if(preserveRoom)return;
   fbRoomRef=null;fbRoom=null;
+  mySlot=-1;
+}
+function defaultAccountProfile(normalized,displayName){
+  const profileStats=defaultProgressionStats();
+  return{
+    username:normalized,
+    displayName,
+    coins:0,
+    progressionStats:{...profileStats},
+    progressionDevices:{[getLocalDeviceId()]:{...profileStats}},
+    matchHistory:[],
+    rating:1000,
+    wins:0,
+    losses:0,
+    games:0,
+    createdAt:Date.now(),
+    lastPlayedAt:null
+  };
+}
+function publicProfileFromProfile(profile){
+  const base=profile&&typeof profile==='object'?profile:{};
+  const username=normalizeUsername(base.username||base.displayName||'player');
+  return{
+    username,
+    displayName:String(base.displayName||username||'Player').slice(0,32),
+    rating:formatRating(base.rating),
+    wins:sanitizeCoinValue(base.wins),
+    losses:sanitizeCoinValue(base.losses),
+    games:sanitizeCoinValue(base.games),
+    updatedAt:Date.now()
+  };
+}
+function publicRankUpdates(updates){
+  const clean={};
+  ['rating','wins','losses','games'].forEach(key=>{
+    if(updates[key]!=null)clean[key]=sanitizeCoinValue(updates[key]);
+  });
+  if(Object.keys(clean).length)clean.updatedAt=Date.now();
+  return clean;
+}
+async function syncPublicProfile(uid,profile){
+  if(!uid||!profile||!fbInit())return;
+  await fbDb.ref(`${PUBLIC_PROFILE_PATH}/${uid}`).update(publicProfileFromProfile(profile));
+}
+async function claimUsername(normalized,uid){
+  const ref=fbDb.ref(`${USERNAME_PATH}/${normalized}`);
+  const result=await ref.transaction(current=>{
+    if(current===null||current===uid)return uid;
+    return;
+  });
+  if(!result.committed||result.snapshot.val()!==uid){
+    const err=new Error('That username is already taken.');
+    err.code='username-taken';
+    throw err;
+  }
+}
+async function releaseUsernameClaim(normalized,uid){
+  if(!uid||!normalized||!fbInit())return;
+  await fbDb.ref(`${USERNAME_PATH}/${normalized}`).transaction(current=>current===uid?null:current).catch(()=>{});
+}
+async function cleanupFailedSignup(cred,normalized,claimedUsername=false){
+  if(!cred||!cred.user)return;
+  const uid=cred.user.uid;
+  if(fbDb){
+    await fbDb.ref().update({
+      [`${PROFILE_PATH}/${uid}`]:null,
+      [`${PUBLIC_PROFILE_PATH}/${uid}`]:null
+    }).catch(()=>{});
+  }
+  if(claimedUsername)await releaseUsernameClaim(normalized,uid);
+  try{
+    await cred.user.delete();
+  }catch(err){
+    console.warn('Failed to delete orphaned signup account:',err);
+  }
+}
+function authErrorMessage(e){
+  const code=(e&&e.code)||'';
+  if(code==='auth/email-already-in-use'||code==='username-taken')return'That username is already taken.';
+  return(e&&e.message)||'Account error.';
+}
+function setAuthBusy(isBusy){
+  authSubmitBusy=!!isBusy;
+  const btn=document.getElementById('auth-submit');
+  if(btn)btn.disabled=authSubmitBusy;
 }
 
 function randCode(){
   return Array.from({length:4},()=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');
+}
+function onlineVersionMismatchMessage(){
+  return 'Room version mismatch. Both players should open the same updated game link and hard refresh.';
+}
+function localFileOnlineMessage(){
+  return 'Online multiplayer is unreliable from a local file. Use the same hosted link on both devices, or run http://localhost:3000 locally.';
+}
+function onlineNeedsServedPage(){
+  return window.location.protocol==='file:';
 }
 function showOnlyScreen(id){
   ['screen-menu','screen-auth','screen-board','screen-history','screen-lobby','screen-inventory','game'].forEach(sid=>{
@@ -2262,7 +2458,11 @@ async function adminApplyRank(){
     if(Number.isFinite(losses))updates.losses=Math.max(0,Math.round(losses));
     if(Number.isFinite(games))updates.games=Math.max(0,Math.round(games));
     if(!Object.keys(updates).length){setAdminMessage('Enter at least one rank value.',true);return;}
-    await fbDb.ref(`${PROFILE_PATH}/${uid}`).update(updates);
+    const publicUpdates=publicRankUpdates(updates);
+    const multiUpdates={};
+    Object.entries(updates).forEach(([key,val])=>{multiUpdates[`${PROFILE_PATH}/${uid}/${key}`]=val;});
+    Object.entries(publicUpdates).forEach(([key,val])=>{multiUpdates[`${PUBLIC_PROFILE_PATH}/${uid}/${key}`]=val;});
+    await fbDb.ref().update(multiUpdates);
     if(currentUser&&uid===currentUser.uid){await loadCurrentProfile(uid);}
     setAdminMessage('Rank profile updated.');
   }catch(e){
@@ -2278,7 +2478,11 @@ async function adminResetRank(){
     if(!uid){setAdminMessage('User not found.',true);return;}
     if(!fbInit()){setAdminMessage('Firebase unavailable.',true);return;}
     const base={rating:1000,wins:0,losses:0,games:0};
-    await fbDb.ref(`${PROFILE_PATH}/${uid}`).update(base);
+    const publicUpdates=publicRankUpdates(base);
+    const multiUpdates={};
+    Object.entries(base).forEach(([key,val])=>{multiUpdates[`${PROFILE_PATH}/${uid}/${key}`]=val;});
+    Object.entries(publicUpdates).forEach(([key,val])=>{multiUpdates[`${PUBLIC_PROFILE_PATH}/${uid}/${key}`]=val;});
+    await fbDb.ref().update(multiUpdates);
     if(currentUser&&uid===currentUser.uid){await loadCurrentProfile(uid);}
     const rr=document.getElementById('admin-rank-rating');if(rr)rr.value='1000';
     const rw=document.getElementById('admin-rank-wins');if(rw)rw.value='0';
@@ -2706,12 +2910,14 @@ async function openCosmeticPack(){
   packOpeningActive=true;
   updateEconomyUI();
   addGeltCoins(-PACK_COST_GELT);
-  progressionStats.packsOpened++;
+  updateCurrentDeviceProgress(deviceStats=>{deviceStats.packsOpened++;});
   inventoryPreviewId=id;
   if(alreadyOwned){
     duplicateReward=rarity.duplicateCoins;
-    progressionStats.duplicateMelts++;
-    progressionStats.duplicateGelt+=duplicateReward;
+    updateCurrentDeviceProgress(deviceStats=>{
+      deviceStats.duplicateMelts++;
+      deviceStats.duplicateGelt+=duplicateReward;
+    });
     kicker=`DUPLICATE MELT +${duplicateReward} GC`;
     extra=`${formatCosmeticBoosts(cos.boosts)} / Duplicate reward credited`;
     addGeltCoins(duplicateReward);
@@ -2813,25 +3019,38 @@ async function loadCurrentProfile(uid=currentUser&&currentUser.uid){
   const localProgression=loadLocalProgressionState(uid);
   const localAccessories=loadLocalAccessoriesState(uid);
   const localCoins=loadLocalGeltCoins(uid);
+  const remoteAccessories=sanitizeAccessoriesState(currentProfile&&currentProfile.accessories);
+  const remoteProgressionStats=sanitizeProgressionStats(currentProfile&&currentProfile.progressionStats);
+  const remoteProgressionHistory=sanitizeMatchHistory(currentProfile&&currentProfile.matchHistory);
+  const remoteProgressionDevices=sanitizeProgressionDevices(currentProfile&&currentProfile.progressionDevices);
   const mergedProgression=mergeProgressionState({
-    stats:currentProfile&&currentProfile.progressionStats,
-    history:currentProfile&&currentProfile.matchHistory
+    stats:remoteProgressionStats,
+    history:remoteProgressionHistory,
+    devices:remoteProgressionDevices
   },localProgression);
   applyProgressionState(mergedProgression);
   const remoteCoins=sanitizeCoinValue(currentProfile&&currentProfile.coins);
   const mergedCoins=Math.max(remoteCoins,localCoins);
   setGeltCoins(mergedCoins);
-  const mergedAccessories=mergeAccessoriesStates(currentProfile&&currentProfile.accessories,localAccessories);
+  const mergedAccessories=mergeAccessoriesStates(remoteAccessories,localAccessories);
   applyAccessoriesState(mergedAccessories);
   applyGhostCosmeticAccess();
   writeLocalAccessoriesState(mergedAccessories,uid);
-  if(JSON.stringify(sanitizeAccessoriesState(currentProfile&&currentProfile.accessories))!==JSON.stringify(mergedAccessories)){
+  if(JSON.stringify(remoteAccessories)!==JSON.stringify(mergedAccessories)){
     fbDb.ref(`${PROFILE_PATH}/${uid}/accessories`).set(mergedAccessories).catch(()=>{});
   }
   if(mergedCoins!==remoteCoins)fbDb.ref(`${PROFILE_PATH}/${uid}/coins`).set(mergedCoins).catch(()=>{});
-  if(JSON.stringify(sanitizeProgressionStats(currentProfile&&currentProfile.progressionStats))!==JSON.stringify(mergedProgression.stats) || JSON.stringify(sanitizeMatchHistory(currentProfile&&currentProfile.matchHistory))!==JSON.stringify(mergedProgression.history)){
+  if(JSON.stringify(remoteProgressionStats)!==JSON.stringify(mergedProgression.stats) || JSON.stringify(remoteProgressionHistory)!==JSON.stringify(mergedProgression.history) || JSON.stringify(remoteProgressionDevices)!==JSON.stringify(mergedProgression.devices)){
     persistProgressionState({remote:true});
   }else writeLocalProgressionState(mergedProgression,uid);
+  if(currentProfile&&typeof currentProfile==='object'){
+    currentProfile.accessories=mergedAccessories;
+    currentProfile.coins=mergedCoins;
+    currentProfile.progressionStats=mergedProgression.stats;
+    currentProfile.matchHistory=mergedProgression.history;
+    currentProfile.progressionDevices=mergedProgression.devices;
+  }
+  if(currentProfile)syncPublicProfile(uid,currentProfile).catch(()=>{});
   updateInventoryUI();
   updateAccountUI();
   updateHistoryUI();
@@ -2852,6 +3071,7 @@ async function handleAuthState(user){
 }
 async function submitAuth(){
   if(!fbInit())return setAuthMessage('Firebase not available.',true);
+  if(authSubmitBusy)return;
   const rawName=document.getElementById('auth-name').value.trim();
   const rawPass=document.getElementById('auth-pass').value;
   const valid=validateUsername(rawName);
@@ -2860,37 +3080,37 @@ async function submitAuth(){
   const normalized=valid.normalized;
   const email=usernameEmail(normalized);
   setAuthMessage(authMode==='signup'?'Creating account...':'Logging in...');
+  setAuthBusy(true);
   try{
     if(authMode==='signup'){
-      const nameSnap=await fbDb.ref(`${USERNAME_PATH}/${normalized}`).once('value');
-      if(nameSnap.exists())throw new Error('That username is already taken.');
-      const cred=await fbAuth.createUserWithEmailAndPassword(email,rawPass);
-      await cred.user.updateProfile({displayName:rawName});
-      await fbDb.ref().update({
-        [`${USERNAME_PATH}/${normalized}`]:cred.user.uid,
-        [`${PROFILE_PATH}/${cred.user.uid}`]:{
-          username:normalized,
-          displayName:rawName,
-          coins:0,
-          progressionStats:defaultProgressionStats(),
-          matchHistory:[],
-          rating:1000,
-          wins:0,
-          losses:0,
-          games:0,
-          createdAt:Date.now(),
-          lastPlayedAt:null
-        }
-      });
+      let cred=null,claimedUsername=false;
+      try{
+        cred=await fbAuth.createUserWithEmailAndPassword(email,rawPass);
+        await claimUsername(normalized,cred.user.uid);
+        claimedUsername=true;
+        await cred.user.updateProfile({displayName:rawName});
+        const profile=defaultAccountProfile(normalized,rawName);
+        await fbDb.ref().update({
+          [`${PROFILE_PATH}/${cred.user.uid}`]:profile,
+          [`${PUBLIC_PROFILE_PATH}/${cred.user.uid}`]:publicProfileFromProfile(profile)
+        });
+        await loadCurrentProfile(cred.user.uid);
+      }catch(e){
+        await cleanupFailedSignup(cred,normalized,claimedUsername);
+        throw e;
+      }
       setAuthMessage('Account created.');
     }else{
       await fbAuth.signInWithEmailAndPassword(email,rawPass);
+      await loadCurrentProfile(fbAuth.currentUser&&fbAuth.currentUser.uid);
       setAuthMessage('Logged in.');
     }
     document.getElementById('auth-pass').value='';
     showMenuScreen();
   }catch(e){
-    setAuthMessage(e.message||'Account error.',true);
+    setAuthMessage(authErrorMessage(e),true);
+  }finally{
+    setAuthBusy(false);
   }
 }
 async function logoutAccount(){
@@ -2907,7 +3127,7 @@ async function refreshLeaderboard(){
   const meEl=document.getElementById('me-row');
   listEl.innerHTML='<div class="lb-empty">Loading leaderboard...</div>';
   try{
-    const snap=await fbDb.ref(PROFILE_PATH).once('value');
+    const snap=await fbDb.ref(PUBLIC_PROFILE_PATH).once('value');
     const rows=[];
     snap.forEach(child=>{
       const v=child.val();
@@ -2962,6 +3182,7 @@ async function submitRankedBotResult(playerWon,coinReward=0){
     if(result&&result.snapshot){
       currentProfile=result.snapshot.val();
       setGeltCoins(sanitizeCoinValue(currentProfile&&currentProfile.coins));
+      syncPublicProfile(currentUser.uid,currentProfile).catch(()=>{});
       updateAccountUI();
     }
   }catch(e){
@@ -2974,6 +3195,23 @@ function setLobbyMode(m){
   document.getElementById('opt-1v1').classList.toggle('active',m==='1v1');
   document.getElementById('opt-2v2').classList.toggle('active',m==='2v2');
 }
+function teardownOnlineRoomForExit(){
+  if(!fbRoomRef||!fbRoom)return;
+  const roomRef=fbRoomRef;
+  if(mySlot===0){
+    roomRef.remove().catch(()=>{});
+    return;
+  }
+  roomRef.update({
+    filled:1,
+    state:'lobby',
+    serving:0,
+    guestPresence:null,
+    gs:null,
+    evt:null,
+    act:null
+  }).catch(()=>{});
+}
 function switchTab(t){
   activeTab=t;
   document.querySelectorAll('.tab-btn').forEach((el,i)=>el.classList.toggle('active',(i===0&&t==='create')||(i===1&&t==='join')));
@@ -2982,8 +3220,16 @@ function switchTab(t){
 }
 function showLobby(){
   showOnlyScreen('screen-lobby');
+  if(onlineNeedsServedPage()){
+    setS('c',localFileOnlineMessage(),'e');
+    setS('j',localFileOnlineMessage(),'e');
+  }else{
+    setS('c','Create a room to start online play.');
+    setS('j','Enter a 4-letter room code to join.');
+  }
 }
 function goMenu(){
+  if(gmode==='online'&&fbRoomRef)teardownOnlineRoomForExit();
   if(animId){cancelAnimationFrame(animId);animId=null;}
   fbOff();
   clearTransientMatchState();
@@ -2996,9 +3242,84 @@ function goMenu(){
   updateBotModeTheme();
   updateMobileUI();
 }
+function showHostedRoomWaiting(message,type='w'){
+  if(animId){cancelAnimationFrame(animId);animId=null;}
+  clearTransientMatchState();
+  phase='waiting';
+  gmode='';
+  showOnlyScreen('screen-lobby');
+  switchTab('create');
+  document.getElementById('codewrap').style.display='block';
+  document.getElementById('ctrlstrip').style.display='none';
+  document.getElementById('roomcode').textContent=fbRoom||'----';
+  drawPslots(1,2);
+  setS('c',message,type);
+  updateBotModeTheme();
+  updateMobileUI();
+}
+function showJoinRoomClosed(message){
+  if(animId){cancelAnimationFrame(animId);animId=null;}
+  clearTransientMatchState();
+  phase='waiting';
+  gmode='';
+  showOnlyScreen('screen-lobby');
+  switchTab('join');
+  document.getElementById('codewrap').style.display='none';
+  document.getElementById('ctrlstrip').style.display='none';
+  setS('j',message,'e');
+  updateBotModeTheme();
+  updateMobileUI();
+}
+function attachHostLobbyWatcher(){
+  if(!fbRoomRef)return;
+  const offLobby=fbRoomRef.on('value',snap=>{
+    const d=snap.val();
+    if(!d){
+      fbOff();
+      showHostedRoomWaiting('Room closed. Create a new room.','e');
+      return;
+    }
+    if(gmode==='online')return;
+    document.getElementById('roomcode').textContent=d.code||fbRoom||'----';
+    document.getElementById('codewrap').style.display='block';
+    drawPslots(d.filled||1,d.needed||2);
+    if(d.state==='playing'&&gmode!=='online'){
+      fbRoomRef.off('value',offLobby);
+      launchGame('online',d.mode||'1v1');
+      fbListenState();
+    }
+  });
+  fbListeners.push(()=>fbRoomRef&&fbRoomRef.off('value',offLobby));
+}
+async function resetHostedRoomToLobby(message){
+  if(!fbRoomRef||onlineRoomRecovery)return;
+  onlineRoomRecovery=true;
+  fbOff({preserveRoom:true});
+  try{
+    await fbRoomRef.update({
+      filled:1,
+      state:'lobby',
+      serving:0,
+      guestPresence:null,
+      gs:null,
+      evt:null,
+      act:null
+    });
+    fbRoomRef.onDisconnect().remove();
+  }catch(e){
+    console.error('Host room recovery failed:',e);
+  }
+  showHostedRoomWaiting(message,'w');
+  attachHostLobbyWatcher();
+  onlineRoomRecovery=false;
+}
 
 async function createRoom(){
   if(!fbInit())return;
+  if(onlineNeedsServedPage()){
+    setS('c',localFileOnlineMessage(),'e');
+    return;
+  }
   setS('c','Creating room...','w');
   const code=randCode();
   try{
@@ -3006,23 +3327,14 @@ async function createRoom(){
     fbRoom=code; mySlot=0; lmode=lobbyMode;
     await fbRoomRef.set({
       code, mode:lobbyMode, needed:2, filled:1,
-      state:'lobby', serving:0
+      state:'lobby', serving:0, guestPresence:null, buildVersion:ONLINE_ROOM_VERSION
     });
     fbRoomRef.onDisconnect().remove();
     document.getElementById('roomcode').textContent=code;
     document.getElementById('codewrap').style.display='block';
     drawPslots(1,2);
     setS('c','Waiting for opponent...','w');
-    const offLobby=fbRoomRef.on('value',snap=>{
-      const d=snap.val();if(!d)return;
-      drawPslots(d.filled||1,d.needed||2);
-      if(d.state==='playing'&&gmode!=='online'){
-        fbRoomRef.off('value',offLobby);
-        launchGame('online',d.mode||'1v1');
-        fbListenState();
-      }
-    });
-    fbListeners.push(()=>fbRoomRef.off('value',offLobby));
+    attachHostLobbyWatcher();
   }catch(e){setS('c','Error: '+e.message,'e');}
 }
 
@@ -3030,19 +3342,31 @@ async function joinRoom(){
   const code=document.getElementById('jinput').value.trim().toUpperCase();
   if(code.length<4){setS('j','Enter 4-letter code','e');return;}
   if(!fbInit())return;
+  if(onlineNeedsServedPage()){
+    setS('j',localFileOnlineMessage(),'e');
+    return;
+  }
   setS('j','Joining...','w');
   try{
     const snap=await fbDb.ref('rooms/'+code).once('value');
     const d=snap.val();
     if(!d){setS('j','Room not found','e');return;}
+    if((d.buildVersion||'')!==ONLINE_ROOM_VERSION){setS('j',onlineVersionMismatchMessage(),'e');return;}
     if(d.state!=='lobby'){setS('j','Game already started','e');return;}
     if((d.filled||1)>=d.needed){setS('j','Room full','e');return;}
 
     mySlot=2; lmode=d.mode||'1v1'; fbRoom=code;
     fbRoomRef=fbDb.ref('rooms/'+code);
-    await fbRoomRef.update({filled:2, state:'playing'});
-    fbRoomRef.child('guestPresence').onDisconnect().remove();
-    await fbRoomRef.child('guestPresence').set(true);
+    await fbRoomRef.update({filled:2, state:'playing', guestPresence:true});
+    fbRoomRef.onDisconnect().update({
+      filled:1,
+      state:'lobby',
+      serving:0,
+      guestPresence:null,
+      gs:null,
+      evt:null,
+      act:null
+    });
 
     drawPslots(2,2);
     setS('j','Joined! Starting...','w');
@@ -3084,6 +3408,28 @@ function fbSendAction(action){
 // ── GUEST: listen to host state + events ─────────────────────────────────
 function fbListenState(){
   if(!fbRoom)return;
+
+  const roomRef=fbDb.ref('rooms/'+fbRoom);
+  const offRoom=roomRef.on('value',snap=>{
+    if(onlineRoomRecovery||gmode!=='online')return;
+    const d=snap.val();
+    if(!d){
+      fbOff();
+      if(mySlot===0)showHostedRoomWaiting('Room closed. Create a new room.','e');
+      else showJoinRoomClosed('Host disconnected. Join another room.');
+      return;
+    }
+    const filled=Number(d.filled||0);
+    if(mySlot===0){
+      if(filled<2||!d.guestPresence){
+        resetHostedRoomToLobby('Opponent disconnected. Waiting for a new opponent...');
+      }
+    }else if(d.state==='lobby'||filled<2){
+      fbOff();
+      showJoinRoomClosed('Host disconnected. Join another room.');
+    }
+  });
+  fbListeners.push(()=>roomRef.off('value',offRoom));
 
   if(mySlot!==0){
     const gsRef=fbDb.ref('rooms/'+fbRoom+'/gs');
@@ -3991,6 +4337,11 @@ function botTargetX(ai,pred,hx,hn,onSide){
   const backLine=slotMaxX(2)-PW-16;
   const center=nx()+W*0.18;
   const nearNet=nx()+58;
+  const setterLane=nx()+92;
+  const oppNearNet=hx>nx()-96;
+  const oppDeep=hx<nx()*0.33;
+  const blockLane=Math.max(nearNet,Math.min(backLine,hx+10));
+  const approachLane=oppDeep?nx()+86:Math.min(backLine,nx()+W*0.22);
   const humanBias=hx<nx()*0.5?nx()+W*0.30:nx()+W*0.09;
   const err=(Math.random()-.5)*DIFF[diff].err*botErrorScale()*(hn===0?1:0.5);
   const landing=Math.max(nearNet,Math.min(backLine,pred.x-PW/2));
@@ -3999,6 +4350,8 @@ function botTargetX(ai,pred,hx,hn,onSide){
 
   if(!onSide){
     const inboundToBot=(ball.vx>0.65||serving===0)&&pred.x>nx()+18;
+    const opponentAttackWindow=sideHits[0]>=1&&oppNearNet&&ball.x>nx()-120&&ball.x<nx()+110&&ball.y<fl()-92;
+    if(opponentAttackWindow)return Math.max(nearNet,Math.min(backLine,blockLane+err*0.18));
     if(inboundToBot)return Math.max(nearNet,Math.min(backLine,landing+err*0.35+receiveLead*0.28));
     return Math.max(nearNet,Math.min(backLine,defend+err));
   }
@@ -4006,17 +4359,18 @@ function botTargetX(ai,pred,hx,hn,onSide){
     return Math.max(nearNet,Math.min(backLine,landing+err+receiveLead));
   }
   if(hn===1){
-    if(ball.y>fl()-92)return Math.max(nearNet,Math.min(backLine,landing+err*0.35));
-    return Math.max(nearNet,Math.min(backLine,center+(profile.key==='easy'?10:4)+err*0.35));
+    if(ball.y>fl()-92||Math.abs(ball.vx)>4.8)return Math.max(nearNet,Math.min(backLine,landing+err*0.35));
+    return Math.max(nearNet,Math.min(backLine,setterLane+(profile.key==='easy'?10:profile.key==='med'?4:-4)+err*0.24));
   }
-  return Math.max(nearNet,Math.min(backLine,landing*(profile.key==='hard'?0.78:0.74)+humanBias*(profile.key==='hard'?0.32:0.26)+err*0.26));
+  const attackLane=oppNearNet&&!oppDeep?approachLane+18:approachLane;
+  return Math.max(nearNet,Math.min(backLine,attackLane+err*0.22));
 }
 function botShouldJump(ai,hn,onSide,dist){
   const profile=botProfile();
   if(!ai.onGround||!onSide)return false;
   if(hn>=2)return ball.y<fl()-DIFF[diff].jt*(1.06+profile.jumpBias)&&ball.y>nt()+20&&dist<168;
-  if(hn===1)return ball.y<fl()-DIFF[diff].jt*(0.76+profile.jumpBias*0.5)&&ball.y>nt()+20&&dist<100;
-  return profile.key!=='easy'&&ball.y<fl()-DIFF[diff].jt*(0.52+profile.jumpBias*0.3)&&dist<66;
+  if(hn===1)return profile.key==='hard'&&ball.x<nx()+82&&ball.y<fl()-DIFF[diff].jt*(0.62+profile.jumpBias*0.32)&&ball.y>nt()+20&&dist<82&&Math.random()<profile.quickKill*0.22;
+  return false;
 }
 function botCanReachNow(ai,skill='bump',mult=1.12){
   if(!ai)return false;
@@ -4029,36 +4383,78 @@ function botBallPressure(ai){
   return{
     dx,
     descending:ball.vy>0.15,
+    high:ball.y<fl()-150,
     low:ball.y>fl()-170,
     mid:ball.y>fl()-220,
     hittable:ball.y>nt()+12&&ball.y<fl()-18,
     nearNet:ball.x<nx()+96,
-    fast:Math.abs(ball.vx)>3.6
+    fast:Math.abs(ball.vx)>3.6,
+    awkward:Math.abs(ball.vx)>4.8||ball.y>fl()-102,
+    controllable:ball.y>nt()+18&&ball.y<fl()-72&&Math.abs(ball.vx)<5.2,
+    tight:ball.x<nx()+76&&ball.y<fl()-88
   };
+}
+function botOpponentRead(){
+  const player=PL[0];
+  const px=player?player.x+PW/2:nx()*0.25;
+  return{
+    x:px,
+    nearNet:px>nx()-96,
+    deep:px<nx()*0.33,
+    airborne:!!(player&&!player.onGround),
+    attackWindow:!!(player&&(sideHits[0]>=1||!player.onGround)&&px>nx()-118&&ball.x>nx()-132&&ball.x<nx()+122&&ball.y<fl()-84)
+  };
+}
+function botAttackProfile(ai,pressure,opp){
+  const dist=Math.abs(ball.x-(ai.x+PW/2));
+  const grounded=!!(ai&&ai.onGround);
+  const cleanSet=pressure.controllable&&dist<150;
+  const cleanSpike=((!grounded&&inRangeForSkill(2,'spike')&&ball.y>nt()+10) || (grounded&&pressure.hittable&&pressure.high&&dist<136));
+  const tipLane=opp.deep||!opp.nearNet||pressure.tight;
+  return{
+    dist,
+    cleanSet,
+    cleanSpike,
+    tipLane,
+    emergency:pressure.fast||pressure.low||pressure.awkward||dist>160
+  };
+}
+function botShouldBlockRead(ai,opp){
+  const profile=botProfile();
+  if(!ai.onGround||aiState.blockCool>0)return false;
+  if(Math.abs((ai.x+PW/2)-nx())>=132)return false;
+  if(!opp.attackWindow)return false;
+  const chance=profile.blockChance*(sideHits[0]>=2?1:0.58)*(opp.airborne?1.08:0.86);
+  return Math.random()<chance;
 }
 function chooseBotSkill(hn,ai,hx){
   const profile=botProfile();
-  const player=PL[0];
-  const px=player?player.x+PW/2:nx()*0.25;
-  const playerNearNet=px>nx()-95;
-  const playerDeep=px<nx()*0.33;
-  const ballHigh=ball.y<fl()-135;
-  const ballNearNet=ball.x<nx()+82;
+  const pressure=botBallPressure(ai);
+  const opp=botOpponentRead();
+  const attack=botAttackProfile(ai,pressure,opp);
   if(hn===0){
-    if(ballHigh&&ball.x>nx()+68&&Math.random()<profile.receiveSetChance)return 'set';
+    if(attack.emergency)return 'bump';
+    if(pressure.high&&pressure.nearNet&&Math.random()<profile.receiveSetChance*0.18&&profile.key!=='easy')return 'set';
     return 'bump';
   }
   if(hn===1){
-    if(ball.y>fl()-84)return 'bump';
-    if(isAirborne(ai)&&ballNearNet&&Math.random()<profile.quickKill)return playerNearNet&&!playerDeep?'tip':'spike';
+    if(attack.emergency||!attack.cleanSet)return 'bump';
     if(Math.random()<profile.secondTouchSet)return 'set';
-    return playerNearNet&&!playerDeep&&Math.random()<profile.tipChance?'tip':'spike';
+    if(pressure.tight&&attack.tipLane&&Math.random()<profile.quickKill*0.18)return 'tip';
+    return 'bump';
   }
-  if(hn>=2)return Math.random()<profile.tipChance*0.75?'tip':'spike';
-  if(!isAirborne(ai))return playerNearNet&&!playerDeep&&Math.random()<profile.tipChance?'tip':'bump';
-  if(playerNearNet&&ballNearNet)return 'tip';
-  if(profile.key==='easy'&&Math.random()<0.18)return 'tip';
-  return 'spike';
+  if(hn>=2){
+    if(attack.emergency&&!attack.cleanSpike)return 'bump';
+    if(attack.cleanSpike){
+      if(attack.tipLane&&Math.random()<profile.tipChance*(pressure.tight?1.35:0.9))return 'tip';
+      return 'spike';
+    }
+    if(attack.tipLane&&pressure.hittable&&!pressure.low)return 'tip';
+    return 'bump';
+  }
+  if(!isAirborne(ai))return attack.tipLane&&Math.random()<profile.tipChance?'tip':'bump';
+  if(attack.tipLane&&pressure.nearNet)return 'tip';
+  return pressure.high?'spike':'tip';
 }
 function botAttackNudge(skill,hx){
   const profile=botProfile();
@@ -4132,19 +4528,15 @@ function aiTick(){
   const aiCx=ai.x+PW/2;
   const pred=predictBall();
   const hx=humanX();
+  const opp=botOpponentRead();
   const inServeGrace=Date.now()<botServeGraceUntil;
 
   if(aiState.blockCool>0)aiState.blockCool--;
-  if(ai.onGround&&aiState.blockCool===0){
-    const incomingSpike=ball.vx>2.1&&ball.x>nx()-32&&ball.x<nx()+178&&ball.y<fl()-28;
-    const playerAttackWindow=PL[0]&&(!PL[0].onGround||ball.y<fl()-124)&&ball.x>nx()-116&&ball.x<nx()+126;
-    const nearNet=Math.abs((ai.x+PW/2)-nx())<136;
-    if((incomingSpike||playerAttackWindow)&&nearNet&&Math.random()<profile.blockChance){
-      ai.vy=JV*(1.03+profile.jumpBias*0.42);
-      ai.onGround=false;
-      aiState.blocking=true;blockingSlots.add(2);updateSkillBar();
-      setTimeout(()=>{aiState.blocking=false;blockingSlots.delete(2);aiState.blockCool=58;updateSkillBar();},profile.blockHold);
-    }
+  if(botShouldBlockRead(ai,opp)){
+    ai.vy=JV*(1.03+profile.jumpBias*0.42);
+    ai.onGround=false;
+    aiState.blocking=true;blockingSlots.add(2);updateSkillBar();
+    setTimeout(()=>{aiState.blocking=false;blockingSlots.delete(2);aiState.blockCool=58;updateSkillBar();},profile.blockHold);
   }
 
   let tx=botTargetX(ai,pred,hx,hn,onSide);
@@ -4168,117 +4560,102 @@ function aiTick(){
   }
   gravTick(ai,2);
   const pressure=botBallPressure(ai);
-  const urgentReceive=onSide&&hn===0&&((pressure.descending&&(pressure.low||pressure.fast))||spikeDefenseWindow)&&botCanReachNow(ai,'bump',spikeDefenseWindow?1.42:1.32);
-  const urgentSet=onSide&&hn===1&&pressure.hittable&&botCanReachNow(ai,'set',1.16);
-  const urgentAttack=onSide&&hn>=2&&pressure.hittable&&botCanReachNow(ai,'spike',1.18);
-  const urgentAny=urgentReceive||urgentSet||urgentAttack;
+  const attack=botAttackProfile(ai,pressure,opp);
+  const emergencySave=onSide&&hn<3&&pressure.descending&&attack.emergency&&botCanReachNow(ai,'bump',spikeDefenseWindow?1.42:1.28);
 
   if(inServeGrace){
     return;
   }
 
-  if(onSide&&hn===0&&aiCool<=Math.max(0,aiTune.coolMin-2)&&botCanReachNow(ai,'bump',1.4)){
-    const firstSkill=pressure.low||pressure.fast?'bump':(Math.random()<profile.receiveSetChance*0.35?'set':'bump');
-    doHitLocal(2,Math.max(0.84,cfg.pwr()),firstSkill);
+  if(emergencySave&&aiCool<=Math.max(0,aiTune.coolMin-2)){
+    const emergencySkill=hn===1&&!pressure.low&&pressure.high&&Math.random()<profile.receiveSetChance*0.24?'set':'bump';
+    doHitLocal(2,Math.max(0.8,cfg.pwr()),emergencySkill);
     aiCool=Math.max(3,aiTune.coolMin-2);
     return;
   }
 
-  if(onSide&&hn>=2&&phase==='playing'){
-    const dist3=Math.abs(ball.x-(ai.x+PW/2));
-    if(ai.onGround&&ball.y<fl()-aiTune.forceTopGap&&ball.y>nt()+18&&dist3<aiTune.forceDist&&Math.random()<aiTune.thirdChance){
-      ai.vy=JV*aiTune.jumpMul;
-      ai.onGround=false;
-      spikeFired[2]=false;
-    }
-    if(!ai.onGround&&inRangeForSkill(2,'spike')&&aiCool<=0){
-      doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),'spike');
-      botAttackNudge('spike',humanX());
-      maybeTriggerBotTrick('spike');
-      aiCool=aiTune.coolMin;
-      return;
-    }
-    // Emergency finisher: never let 3rd touch die on bot side if it's close enough.
-    if(aiCool<=0&&dist3<SPIKE_HR*1.95&&ball.y>nt()+8&&ball.y<fl()-14){
-      doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),'spike',true);
-      botAttackNudge('spike',humanX());
-      maybeTriggerBotTrick('spike');
-      aiCool=aiTune.coolMin+1;
-      return;
-    }
-  }
-
-  if(urgentReceive&&aiCool<=Math.max(0,aiTune.coolMin-2)){
-    const firstSkill=ball.y<fl()-190&&Math.random()<profile.receiveSetChance*0.4?'set':'bump';
+  if(onSide&&hn===0&&aiCool<=Math.max(0,aiTune.coolMin-2)&&botCanReachNow(ai,'bump',1.38)){
+    const firstSkill=chooseBotSkill(0,ai,hx);
     doHitLocal(2,Math.max(0.82,cfg.pwr()),firstSkill);
     aiCool=Math.max(3,aiTune.coolMin-2);
     return;
   }
-  if(urgentSet&&aiCool<=Math.max(0,aiTune.coolMin-2)){
-    const secondSkill=ball.y>fl()-98?'bump':(Math.random()<profile.secondTouchSet?'set':'bump');
-    doHitLocal(2,Math.max(0.84,cfg.pwr()),secondSkill);
-    aiCool=Math.max(3,aiTune.coolMin-2);
-    return;
-  }
-  if(urgentAttack&&aiCool<=Math.max(0,aiTune.coolMin-2)){
-    const attackSkill=Math.random()<profile.tipChance*0.65?'tip':'spike';
-    if(attackSkill==='spike'&&ai.onGround&&ball.y<fl()-52){
-      ai.vy=JV*aiTune.jumpMul;
-      ai.onGround=false;
-      spikeFired[2]=false;
+
+  if(onSide&&hn===1&&aiCool<=Math.max(0,aiTune.coolMin-2)&&botCanReachNow(ai,'set',1.16)){
+    const secondSkill=chooseBotSkill(1,ai,hx);
+    if(secondSkill==='set'&&attack.cleanSet&&inRangeForSkill(2,'set')){
+      doHitLocal(2,Math.max(0.84,cfg.pwr()),'set');
+      aiCool=Math.max(3,aiTune.coolMin-2);
+      return;
     }
-    if(attackSkill==='tip'||!ai.onGround){
-      doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),attackSkill,attackSkill==='spike');
-      botAttackNudge(attackSkill,humanX());
-      maybeTriggerBotTrick(attackSkill);
-      aiCool=Math.max(3,aiTune.coolMin-1);
+    if(secondSkill==='tip'&&inRangeForSkill(2,'tip')){
+      doHitLocal(2,Math.max(0.8,cfg.pwr()),'tip');
+      botAttackNudge('tip',humanX());
+      maybeTriggerBotTrick('tip');
+      aiCool=Math.max(4,aiTune.coolMin-1);
+      return;
+    }
+    if(botCanReachNow(ai,'bump',1.2)){
+      doHitLocal(2,Math.max(0.8,cfg.pwr()),'bump');
+      aiCool=Math.max(3,aiTune.coolMin-2);
       return;
     }
   }
 
-  if(onSide&&phase==='playing'&&hn>=2&&aiCool<=0&&inRangeForSkill(2,'spike')){
-    if(ai.onGround&&ball.y<fl()-34){
-      ai.vy=JV*aiTune.jumpMul;
-      ai.onGround=false;
+  if(onSide&&hn>=2&&phase==='playing'&&aiCool<=0){
+    const thirdSkill=chooseBotSkill(hn,ai,hx);
+    const dist3=Math.abs(ball.x-(ai.x+PW/2));
+    if(thirdSkill==='spike'){
+      if(ai.onGround&&pressure.high&&ball.y<fl()-aiTune.forceTopGap&&ball.y>nt()+18&&dist3<aiTune.forceDist&&Math.random()<aiTune.thirdChance){
+        ai.vy=JV*aiTune.jumpMul;
+        ai.onGround=false;
+        spikeFired[2]=false;
+      }
+      if(!ai.onGround&&inRangeForSkill(2,'spike')){
+        doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),'spike');
+        botAttackNudge('spike',humanX());
+        maybeTriggerBotTrick('spike');
+        aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
+        return;
+      }
+      if(inRangeForSkill(2,'tip')&&attack.tipLane){
+        doHitLocal(2,Math.max(0.82,cfg.pwr()),'tip');
+        botAttackNudge('tip',humanX());
+        maybeTriggerBotTrick('tip');
+        aiCool=Math.max(4,aiTune.coolMin);
+        return;
+      }
+      if(botCanReachNow(ai,'bump',1.22)){
+        doHitLocal(2,Math.max(0.82,cfg.pwr()),'bump');
+        aiCool=Math.max(4,aiTune.coolMin);
+        return;
+      }
     }
-    doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),'spike',true);
-    botAttackNudge('spike',humanX());
-    maybeTriggerBotTrick('spike');
-    aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
-    return;
-  }
-  // Ultra fallback: if spike range misses but ball is still reachable, force a spike clear.
-  const nearReach=Math.sqrt((ball.x-(ai.x+PW/2))**2+(ball.y-ai.y)**2)<HR*1.25;
-  if(onSide&&phase==='playing'&&hn>=2&&aiCool<=0&&nearReach&&ball.y<fl()-14){
-    doHitLocal(2,1,'spike',true);
-    botAttackNudge('spike',humanX());
-    maybeTriggerBotTrick('spike');
-    aiCool=profile.key==='hard'?9:profile.key==='med'?11:14;
-    return;
-  }
-
-  if(onSide&&hn===0&&aiCool<=0&&inRangeForSkill(2,'bump')&&ball.y>fl()-138){
-    doHitLocal(2,Math.max(0.8,cfg.pwr()),'bump');
-    aiCool=Math.max(4,aiTune.coolMin-2);
-    return;
-  }
-  if(onSide&&hn===1&&aiCool<=0&&inRangeForSkill(2,'set')&&ball.y>nt()+16){
-    const prepSkill=chooseBotSkill(hn,ai,hx);
-    if(prepSkill==='set'){
-      doHitLocal(2,Math.max(0.82,cfg.pwr()),'set');
-      aiCool=Math.max(4,aiTune.coolMin-2);
+    if(thirdSkill==='tip'&&inRangeForSkill(2,'tip')){
+      doHitLocal(2,Math.max(0.82,cfg.pwr()),'tip');
+      botAttackNudge('tip',humanX());
+      maybeTriggerBotTrick('tip');
+      aiCool=Math.max(4,aiTune.coolMin);
+      return;
+    }
+    if(botCanReachNow(ai,'bump',1.24)){
+      doHitLocal(2,Math.max(0.82,cfg.pwr()),'bump');
+      aiCool=Math.max(4,aiTune.coolMin);
       return;
     }
   }
 
-  if(aiCool>0&&!urgentAny){aiCool--;return;}
+  if(aiCool>0&&!onSide){
+    aiCool--;
+    return;
+  }
   if(!onSide||sideHits[1]>=3)return;
   if(Math.random()>(cfg.sc+profile.contactBonus))return;
   if(!botCanReachNow(ai,'bump',1.18))return;
 
   const captHn=sideHits[1];
   const skill=chooseBotSkill(captHn,ai,hx);
-  if(skill==='spike'&&ai.onGround){
+  if(skill==='spike'&&ai.onGround&&captHn>=2&&pressure.high){
     ai.vy=JV*aiTune.jumpMul;
     ai.onGround=false;
     spikeFired[2]=false;
@@ -4291,19 +4668,38 @@ function aiTick(){
   setTimeout(()=>{
     if(phase!=='playing'||sideHits[1]!==captHn||ball.x<=nx())return;
     let resolvedSkill=captSkill;
-    if(!inRangeForSkill(2,resolvedSkill)){
-      if(resolvedSkill==='set'&&inRangeForSkill(2,'bump'))resolvedSkill='bump';
-      else if(resolvedSkill==='spike'&&inRangeForSkill(2,'tip'))resolvedSkill='tip';
+    if(resolvedSkill==='set'&&!inRangeForSkill(2,'set')){
+      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
       else return;
     }
-    if(resolvedSkill==='spike'&&PL[2]&&PL[2].onGround){
-      PL[2].vy=JV*aiTune.jumpMul;
-      PL[2].onGround=false;
-      spikeFired[2]=false;
+    if(resolvedSkill==='spike'){
+      if(PL[2]&&PL[2].onGround){
+        const cleanLift=ball.y<fl()-110&&Math.abs(ball.x-(PL[2].x+PW/2))<140;
+        if(cleanLift){
+          PL[2].vy=JV*aiTune.jumpMul;
+          PL[2].onGround=false;
+          spikeFired[2]=false;
+        }else if(inRangeForSkill(2,'tip'))resolvedSkill='tip';
+        else resolvedSkill='bump';
+      }
+      if(resolvedSkill==='spike'&&!isAirborne(PL[2])){
+        if(inRangeForSkill(2,'tip'))resolvedSkill='tip';
+        else resolvedSkill='bump';
+      }
     }
-    if(resolvedSkill==='spike'&&!isAirborne(PL[2]))return;
-
-    const hitPower=resolvedSkill==='spike'?Math.max(aiTune.pwrFloor,cfg.pwr()):Math.max(0.78,cfg.pwr());
+    if(resolvedSkill==='tip'&&!inRangeForSkill(2,'tip')){
+      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
+      else return;
+    }
+    if(resolvedSkill!=='spike'&&resolvedSkill!=='set'&&!inRangeForSkill(2,resolvedSkill)){
+      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
+      else return;
+    }
+    const hitPower=resolvedSkill==='spike'
+      ?Math.max(aiTune.pwrFloor,cfg.pwr())
+      :resolvedSkill==='set'
+        ?Math.max(0.84,cfg.pwr())
+        :Math.max(0.78,cfg.pwr());
     doHitLocal(2,hitPower,resolvedSkill);
     botAttackNudge(resolvedSkill,humanX());
     maybeTriggerBotTrick(resolvedSkill);

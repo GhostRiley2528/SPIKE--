@@ -7,6 +7,12 @@
       ".write": true
     },
     "profiles": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || auth.uid === 'VD5Mm7c3OuY9HKhhKahgmuE2N2q2' || auth.uid === '4wXQMSTK29dbKKpMQLKENIT9TOD2')",
+        ".write": "auth != null && (auth.uid === $uid || auth.uid === 'VD5Mm7c3OuY9HKhhKahgmuE2N2q2' || auth.uid === '4wXQMSTK29dbKKpMQLKENIT9TOD2')"
+      }
+    },
+    "publicProfiles": {
       ".read": true,
       ".indexOn": ["rating"],
       "$uid": {
