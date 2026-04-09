@@ -856,11 +856,27 @@ const BOT_MODE_INFO={
     blockChance:0.8,
     blockHold:360,
     tipChance:0.08,
-    quickKill:0.08,
-    secondTouchSet:0.68,
-    receiveSetChance:0.06,
-    spikeNudge:1.55,
-    tipNudge:0.75,
+    rollChance:0.38,
+    dumpChance:0.02,
+    attackCommit:0.72,
+    quickKill:0.04,
+    secondTouchSet:0.9,
+    receiveSetChance:0.09,
+    spikeNudge:1.35,
+    tipNudge:0.7,
+    rollNudge:1.15,
+    tipLiftBoost:0.08,
+    rollLiftBoost:0.45,
+    passLift:12.7,
+    setLift:12.2,
+    freeBallLift:10.1,
+    freeBallDrive:6.3,
+    freeBallAim:0.55,
+    serveSpeed:5.95,
+    serveLift:12.1,
+    serveAimGain:0.52,
+    serveJitter:0.12,
+    serveShortChance:0.08,
     veilChance:0,
     veilMs:0,
     aiTune:{thirdChance:0.82,forceDist:164,forceTopGap:54,pwrFloor:0.82,jumpMul:1.03,delayJitter:12,coolMin:6,coolVar:4}
@@ -879,11 +895,27 @@ const BOT_MODE_INFO={
     blockChance:0.76,
     blockHold:330,
     tipChance:0.22,
-    quickKill:0.18,
-    secondTouchSet:0.82,
-    receiveSetChance:0.16,
-    spikeNudge:2.45,
-    tipNudge:1.1,
+    rollChance:0.46,
+    dumpChance:0.12,
+    attackCommit:0.78,
+    quickKill:0.08,
+    secondTouchSet:0.86,
+    receiveSetChance:0.12,
+    spikeNudge:2.05,
+    tipNudge:1.05,
+    rollNudge:1.42,
+    tipLiftBoost:0.18,
+    rollLiftBoost:0.62,
+    passLift:12.5,
+    setLift:12.35,
+    freeBallLift:10.35,
+    freeBallDrive:6.65,
+    freeBallAim:0.72,
+    serveSpeed:6.18,
+    serveLift:12.45,
+    serveAimGain:0.68,
+    serveJitter:0.16,
+    serveShortChance:0.22,
     veilChance:0.34,
     veilMs:850,
     aiTune:{thirdChance:0.96,forceDist:174,forceTopGap:46,pwrFloor:0.9,jumpMul:1.06,delayJitter:8,coolMin:5,coolVar:3}
@@ -902,11 +934,27 @@ const BOT_MODE_INFO={
     blockChance:0.92,
     blockHold:390,
     tipChance:0.14,
-    quickKill:0.28,
-    secondTouchSet:0.92,
-    receiveSetChance:0.22,
+    rollChance:0.18,
+    dumpChance:0.03,
+    attackCommit:0.92,
+    quickKill:0.06,
+    secondTouchSet:0.9,
+    receiveSetChance:0.05,
     spikeNudge:3.45,
-    tipNudge:1.45,
+    tipNudge:1.15,
+    rollNudge:1.3,
+    tipLiftBoost:0.14,
+    rollLiftBoost:0.38,
+    passLift:12.15,
+    setLift:11.95,
+    freeBallLift:9.8,
+    freeBallDrive:7.4,
+    freeBallAim:0.48,
+    serveSpeed:6.62,
+    serveLift:12.68,
+    serveAimGain:0.58,
+    serveJitter:0.1,
+    serveShortChance:0.06,
     veilChance:0,
     veilMs:0,
     aiTune:{thirdChance:1,forceDist:186,forceTopGap:40,pwrFloor:0.98,jumpMul:1.09,delayJitter:4,coolMin:4,coolVar:2}
@@ -2715,6 +2763,7 @@ function runSecretUnlockFx(){
 function onMenuLogoTap(){
   if(secretPanelGateOpen)return;
   const now=Date.now();
+  if(now-lastLogoTapAt<120)return;
   if(now-lastLogoTapAt>750){
     logoTapCount=0;
     logoTapWindowStart=now;
@@ -3511,7 +3560,10 @@ function fbListenState(){
         sndPoint();phase='point';
         score=[d.sc0,d.sc1];sets=[d.st0,d.st1];serving=d.sv;
         updateHUD();showOv(d.msg);
-        setTimeout(()=>{
+        if(roundResetTimer){clearTimeout(roundResetTimer);roundResetTimer=null;}
+        roundResetTimer=setTimeout(()=>{
+          roundResetTimer=null;
+          if(phase!=='point')return;
           hideOv();resetPositions();
           sideHits=[0,0];lastHitSlot=-1;rallyHits=0;spikeCool=[0,0,0,0];
           phase='waiting';
@@ -4419,6 +4471,80 @@ function botAttackProfile(ai,pressure,opp){
     emergency:pressure.fast||pressure.low||pressure.awkward||dist>160
   };
 }
+function botCanRunAttack(profile,pressure,attack){
+  if(!attack.cleanSpike)return false;
+  if(!pressure.hittable||pressure.low)return false;
+  if(attack.dist>(profile.key==='hard'?172:160))return false;
+  if(pressure.tight&&ball.y>fl()-118&&!attack.tipLane)return false;
+  return true;
+}
+function botShouldDumpSecond(profile,pressure,opp,attack){
+  if(profile.dumpChance<=0)return false;
+  if(!pressure.tight||!pressure.high||!pressure.nearNet)return false;
+  if(attack.dist>96)return false;
+  if(!opp.deep&&opp.nearNet)return false;
+  const chance=profile.dumpChance*(opp.deep?1.18:0.82);
+  return Math.random()<chance;
+}
+function botShapeContact(skill,hn,hx,pressure,attack){
+  const profile=botProfile();
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  if(skill==='bump'){
+    if(hn===0){
+      const passTarget=nx()+(profile.key==='hard'?96:profile.key==='med'?92:88);
+      const sdx=passTarget-ball.x;
+      ball.vx=clamp(sdx/28,-3.3,2.6);
+      if(ball.x<nx()+52)ball.vx=Math.max(ball.vx,0.85);
+      ball.vy=-(profile.passLift+(pressure.fast?0.45:0)+(pressure.low?0.75:0));
+      return;
+    }
+    if(hn===1){
+      const rescueTarget=nx()+(profile.key==='hard'?92:88);
+      const sdx=rescueTarget-ball.x;
+      ball.vx=clamp(sdx/26,-3.1,2.7);
+      if(ball.x<nx()+50)ball.vx=Math.max(ball.vx,0.75);
+      ball.vy=-(profile.passLift-0.45+(pressure.low?0.65:0));
+      return;
+    }
+    const deepTarget=hx<nx()*0.34?nx()-NW/2-88:hx>nx()-88?nx()-NW/2-70:40;
+    const driven=-profile.freeBallDrive+Math.sign(deepTarget-ball.x)*profile.freeBallAim;
+    ball.vx=Math.min(-3.05,driven);
+    ball.vy=-(profile.freeBallLift+(attack.emergency?0.4:0));
+    return;
+  }
+  if(skill==='set'){
+    const setTarget=nx()+(profile.key==='hard'?94:profile.key==='med'?90:86);
+    const sdx=setTarget-ball.x;
+    ball.vx=clamp(sdx/24,-3.5,2.9);
+    if(ball.x<nx()+48)ball.vx=Math.max(ball.vx,0.8);
+    ball.vy=-(profile.setLift+(pressure.tight?0.35:0)+(pressure.low?0.5:0));
+  }
+}
+function botCanAssistTouch(ai,skill='bump'){
+  if(!ai)return false;
+  const dx=Math.abs(ball.x-(ai.x+PW/2));
+  const dy=Math.abs(ball.y-(ai.y+PH*0.35));
+  const xMax=skill==='spike'?116:136;
+  const yMax=skill==='spike'?132:154;
+  return dx<=xMax&&dy<=yMax;
+}
+function botAssistTouch(ai,skill,pwr,hn,hx,pressure,attack){
+  if(!ai||!botCanAssistTouch(ai,skill))return false;
+  const cx=ai.x+PW/2;
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  ball.x=cx+clamp(ball.x-cx,skill==='spike'?-22:-30,skill==='spike'?22:30);
+  ball.y=ai.y+clamp(ball.y-ai.y,-56,skill==='spike'?38:56);
+  if(skill==='spike'&&ai.onGround){
+    ai.vy=JV*0.72;
+    ai.onGround=false;
+    spikeFired[2]=false;
+  }
+  doHitLocal(2,pwr,skill,true);
+  botShapeContact(skill,hn,hx,pressure,attack);
+  if(skill==='spike'||skill==='tip')botAttackNudge(skill,hx);
+  maybeTriggerBotTrick(skill);
+  return true;
+}
 function botShouldBlockRead(ai,opp){
   const profile=botProfile();
   if(!ai.onGround||aiState.blockCool>0)return false;
@@ -4432,24 +4558,28 @@ function chooseBotSkill(hn,ai,hx){
   const pressure=botBallPressure(ai);
   const opp=botOpponentRead();
   const attack=botAttackProfile(ai,pressure,opp);
+  const attackWindow=botCanRunAttack(profile,pressure,attack);
   if(hn===0){
-    if(attack.emergency)return 'bump';
-    if(pressure.high&&pressure.nearNet&&Math.random()<profile.receiveSetChance*0.18&&profile.key!=='easy')return 'set';
+    if(attack.emergency)return pressure.high&&pressure.nearNet&&Math.random()<profile.receiveSetChance*0.12?'set':'bump';
+    if(pressure.high&&pressure.nearNet&&Math.random()<profile.receiveSetChance*0.16&&profile.key!=='hard')return 'set';
     return 'bump';
   }
   if(hn===1){
     if(attack.emergency||!attack.cleanSet)return 'bump';
+    if(botShouldDumpSecond(profile,pressure,opp,attack))return 'tip';
     if(Math.random()<profile.secondTouchSet)return 'set';
-    if(pressure.tight&&attack.tipLane&&Math.random()<profile.quickKill*0.18)return 'tip';
+    if(pressure.tight&&attack.tipLane&&Math.random()<profile.quickKill)return 'tip';
     return 'bump';
   }
   if(hn>=2){
-    if(attack.emergency&&!attack.cleanSpike)return 'bump';
-    if(attack.cleanSpike){
-      if(attack.tipLane&&Math.random()<profile.tipChance*(pressure.tight?1.35:0.9))return 'tip';
+    if(attack.emergency&&!attackWindow)return 'bump';
+    if(attackWindow){
+      if(attack.tipLane&&Math.random()<(profile.tipChance+(pressure.tight?0.09:0)))return 'tip';
+      if(Math.random()>profile.attackCommit)return attack.tipLane||Math.random()<profile.rollChance?'tip':'bump';
       return 'spike';
     }
-    if(attack.tipLane&&pressure.hittable&&!pressure.low)return 'tip';
+    if(pressure.high&&pressure.hittable&&attack.dist<(profile.key==='hard'?166:154)&&Math.random()<profile.attackCommit*0.72)return 'spike';
+    if(attack.tipLane&&pressure.hittable&&!pressure.low&&Math.random()<profile.rollChance)return 'tip';
     return 'bump';
   }
   if(!isAirborne(ai))return attack.tipLane&&Math.random()<profile.tipChance?'tip':'bump';
@@ -4461,11 +4591,14 @@ function botAttackNudge(skill,hx){
   const playerLeft=hx<nx()*0.5;
   const deepCorner=playerLeft?nx()-NW/2-BR-36:24;
   const midLane=playerLeft?nx()-NW/2-72:66;
+  const shortPocket=playerLeft?nx()-NW/2-54:74;
+  const useRoll=Math.random()<profile.rollChance;
   const targetX=(profile.key==='hard'&&Math.random()<0.55)?deepCorner:midLane;
   if(skill==='tip'){
-    const soft=profile.tipNudge;
-    ball.vx+=Math.sign(targetX-ball.x)*soft;
-    ball.vy-=profile.key==='hard'?0.5:profile.key==='med'?0.3:0.15;
+    const tipTarget=useRoll?deepCorner:(profile.key==='med'&&Math.random()<0.45?shortPocket:midLane);
+    const soft=useRoll?profile.rollNudge:profile.tipNudge;
+    ball.vx+=Math.sign(tipTarget-ball.x)*soft;
+    ball.vy-=useRoll?profile.rollLiftBoost:profile.tipLiftBoost;
     return;
   }
   if(skill!=='spike')return;
@@ -4486,14 +4619,18 @@ function botServeLocal(){
   if(gmode!=='ai'||phase!=='waiting'||serving!==2)return;
   const ai=PL[2];if(!ai)return;
   const profile=botProfile();
-  const aimX=humanX()<nx()*0.34?nx()-NW/2-82:nx()-NW/2-40;
+  const deepAim=humanX()<nx()*0.34?nx()-NW/2-86:40;
+  const seamAim=humanX()<nx()*0.5?nx()-NW/2-68:60;
+  const shortAim=nx()-NW/2-54;
+  const aimX=Math.random()<profile.serveShortChance?shortAim:(Math.random()<0.52?deepAim:seamAim);
   phase='playing';hideOv();setHm('');
   lastHitSlot=-1;lastHitSide=-1;sideHits=[0,0];rallyHits=0;
   ball.x=Math.max(nx()+30,ai.x+PW/2-6);
   ball.y=Math.min(fl()-118,ai.y+18);
-  ball.vx=-(profile.key==='hard'?6.8:profile.key==='med'?6.3:5.9);
-  ball.vx+=Math.sign(aimX-ball.x)*(profile.key==='hard'?0.9:profile.key==='med'?0.55:0.25);
-  ball.vy=-(profile.key==='hard'?13.4:profile.key==='med'?12.8:12.2);
+  const aimDx=aimX-ball.x;
+  ball.vx=-profile.serveSpeed+Math.max(-1.05,Math.min(1.05,(aimDx/135)*profile.serveAimGain));
+  ball.vx+=((Math.random()-.5)*2)*profile.serveJitter;
+  ball.vy=-(profile.serveLift+Math.min(0.4,Math.abs(aimDx)/520));
   ball.spin=ball.vx*0.05;
   botServeGraceUntil=Date.now()+650;
   localStats.aces[1]++;
@@ -4561,7 +4698,8 @@ function aiTick(){
   gravTick(ai,2);
   const pressure=botBallPressure(ai);
   const attack=botAttackProfile(ai,pressure,opp);
-  const emergencySave=onSide&&hn<3&&pressure.descending&&attack.emergency&&botCanReachNow(ai,'bump',spikeDefenseWindow?1.42:1.28);
+  const emergencySaveReach=botCanReachNow(ai,'bump',spikeDefenseWindow?1.42:1.28)||botCanAssistTouch(ai,'bump');
+  const emergencySave=onSide&&hn<3&&pressure.descending&&attack.emergency&&emergencySaveReach;
 
   if(inServeGrace){
     return;
@@ -4569,22 +4707,35 @@ function aiTick(){
 
   if(emergencySave&&aiCool<=Math.max(0,aiTune.coolMin-2)){
     const emergencySkill=hn===1&&!pressure.low&&pressure.high&&Math.random()<profile.receiveSetChance*0.24?'set':'bump';
-    doHitLocal(2,Math.max(0.8,cfg.pwr()),emergencySkill);
+    const emergencyPwr=Math.max(0.8,cfg.pwr());
+    if(!botAssistTouch(ai,emergencySkill,emergencyPwr,hn,hx,pressure,attack)){
+      doHitLocal(2,emergencyPwr,emergencySkill);
+      botShapeContact(emergencySkill,hn,hx,pressure,attack);
+    }
     aiCool=Math.max(3,aiTune.coolMin-2);
     return;
   }
 
-  if(onSide&&hn===0&&aiCool<=Math.max(0,aiTune.coolMin-2)&&botCanReachNow(ai,'bump',1.38)){
+  if(onSide&&hn===0&&aiCool<=Math.max(0,aiTune.coolMin-2)&&(botCanReachNow(ai,'bump',1.38)||botCanAssistTouch(ai,'bump'))){
     const firstSkill=chooseBotSkill(0,ai,hx);
-    doHitLocal(2,Math.max(0.82,cfg.pwr()),firstSkill);
+    const firstPwr=Math.max(0.82,cfg.pwr());
+    if(!botAssistTouch(ai,firstSkill,firstPwr,0,hx,pressure,attack)){
+      doHitLocal(2,firstPwr,firstSkill);
+      botShapeContact(firstSkill,0,hx,pressure,attack);
+    }
     aiCool=Math.max(3,aiTune.coolMin-2);
     return;
   }
 
-  if(onSide&&hn===1&&aiCool<=Math.max(0,aiTune.coolMin-2)&&botCanReachNow(ai,'set',1.16)){
+  if(onSide&&hn===1&&aiCool<=Math.max(0,aiTune.coolMin-2)&&(botCanReachNow(ai,'set',1.16)||botCanAssistTouch(ai,'set'))){
     const secondSkill=chooseBotSkill(1,ai,hx);
     if(secondSkill==='set'&&attack.cleanSet&&inRangeForSkill(2,'set')){
       doHitLocal(2,Math.max(0.84,cfg.pwr()),'set');
+      botShapeContact('set',1,hx,pressure,attack);
+      aiCool=Math.max(3,aiTune.coolMin-2);
+      return;
+    }
+    if(secondSkill==='set'&&botAssistTouch(ai,'set',Math.max(0.84,cfg.pwr()),1,hx,pressure,attack)){
       aiCool=Math.max(3,aiTune.coolMin-2);
       return;
     }
@@ -4595,8 +4746,12 @@ function aiTick(){
       aiCool=Math.max(4,aiTune.coolMin-1);
       return;
     }
-    if(botCanReachNow(ai,'bump',1.2)){
-      doHitLocal(2,Math.max(0.8,cfg.pwr()),'bump');
+    if(botCanReachNow(ai,'bump',1.2)||botCanAssistTouch(ai,'bump')){
+      const bumpPwr=Math.max(0.8,cfg.pwr());
+      if(!botAssistTouch(ai,'bump',bumpPwr,1,hx,pressure,attack)){
+        doHitLocal(2,bumpPwr,'bump');
+        botShapeContact('bump',1,hx,pressure,attack);
+      }
       aiCool=Math.max(3,aiTune.coolMin-2);
       return;
     }
@@ -4618,6 +4773,10 @@ function aiTick(){
         aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
         return;
       }
+      if(botAssistTouch(ai,'spike',Math.max(aiTune.pwrFloor,cfg.pwr()),hn,hx,pressure,attack)){
+        aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
+        return;
+      }
       if(inRangeForSkill(2,'tip')&&attack.tipLane){
         doHitLocal(2,Math.max(0.82,cfg.pwr()),'tip');
         botAttackNudge('tip',humanX());
@@ -4625,8 +4784,12 @@ function aiTick(){
         aiCool=Math.max(4,aiTune.coolMin);
         return;
       }
-      if(botCanReachNow(ai,'bump',1.22)){
-        doHitLocal(2,Math.max(0.82,cfg.pwr()),'bump');
+      if(botCanReachNow(ai,'bump',1.22)||botCanAssistTouch(ai,'bump')){
+        const lateBumpPwr=Math.max(0.82,cfg.pwr());
+        if(!botAssistTouch(ai,'bump',lateBumpPwr,hn,hx,pressure,attack)){
+          doHitLocal(2,lateBumpPwr,'bump');
+          botShapeContact('bump',hn,hx,pressure,attack);
+        }
         aiCool=Math.max(4,aiTune.coolMin);
         return;
       }
@@ -4638,8 +4801,12 @@ function aiTick(){
       aiCool=Math.max(4,aiTune.coolMin);
       return;
     }
-    if(botCanReachNow(ai,'bump',1.24)){
-      doHitLocal(2,Math.max(0.82,cfg.pwr()),'bump');
+    if(botCanReachNow(ai,'bump',1.24)||botCanAssistTouch(ai,'bump')){
+      const savePwr=Math.max(0.82,cfg.pwr());
+      if(!botAssistTouch(ai,'bump',savePwr,hn,hx,pressure,attack)){
+        doHitLocal(2,savePwr,'bump');
+        botShapeContact('bump',hn,hx,pressure,attack);
+      }
       aiCool=Math.max(4,aiTune.coolMin);
       return;
     }
@@ -4683,6 +4850,10 @@ function aiTick(){
         else resolvedSkill='bump';
       }
       if(resolvedSkill==='spike'&&!isAirborne(PL[2])){
+        const botNow=PL[2];
+        const latePressure=botNow?botBallPressure(botNow):null;
+        const lateAttack=botNow&&latePressure?botAttackProfile(botNow,latePressure,botOpponentRead()):null;
+        if(botNow&&latePressure&&lateAttack&&botAssistTouch(botNow,'spike',Math.max(aiTune.pwrFloor,cfg.pwr()),captHn,humanX(),latePressure,lateAttack))return;
         if(inRangeForSkill(2,'tip'))resolvedSkill='tip';
         else resolvedSkill='bump';
       }
@@ -4701,6 +4872,12 @@ function aiTick(){
         ?Math.max(0.84,cfg.pwr())
         :Math.max(0.78,cfg.pwr());
     doHitLocal(2,hitPower,resolvedSkill);
+    const botNow=PL[2];
+    if(botNow){
+      const latePressure=botBallPressure(botNow);
+      const lateAttack=botAttackProfile(botNow,latePressure,botOpponentRead());
+      botShapeContact(resolvedSkill,captHn,humanX(),latePressure,lateAttack);
+    }
     botAttackNudge(resolvedSkill,humanX());
     maybeTriggerBotTrick(resolvedSkill);
   },delay);
@@ -4708,6 +4885,7 @@ function aiTick(){
 }
 function awardLocal(losingSide){
   if(phase!=='playing')return;
+  if(roundResetTimer){clearTimeout(roundResetTimer);roundResetTimer=null;}
   phase='point';
   const win=1-losingSide;
   score[win]++;sideHits=[0,0];lastHitSide=-1;rallyHits=0;lastHitSlot=-1;spikeCool=[0,0,0,0];
@@ -4732,7 +4910,13 @@ function awardLocal(losingSide){
   }
   if(gmode==='online'&&mySlot===0)fbPushEvent({type:"point",win,msg,sc0:score[0],sc1:score[1],st0:sets[0],st1:sets[1],sv:serving});
   showOv(msg);
-  roundResetTimer=setTimeout(()=>{roundResetTimer=null;hideOv();resetPositions();sideHits=[0,0];lastHitSide=-1;lastHitSlot=-1;updateSkillBar();phase='waiting';const srvN2=gmode==='ai'?(serving===0?'YOU':botModeName().toUpperCase()):'P'+(slotSide(serving)===0?'1':'2');setHm(srvN2+' SERVES — Press F or Enter');},1500);
+  roundResetTimer=setTimeout(()=>{
+    roundResetTimer=null;
+    if(phase!=='point')return;
+    hideOv();resetPositions();sideHits=[0,0];lastHitSide=-1;lastHitSlot=-1;updateSkillBar();phase='waiting';
+    const srvN2=gmode==='ai'?(serving===0?'YOU':botModeName().toUpperCase()):'P'+(slotSide(serving)===0?'1':'2');
+    setHm(srvN2+' SERVES — Press F or Enter');
+  },1500);
 }
 
 // ── PARTICLES ─────────────────────────────────────────────────────────────
@@ -5324,12 +5508,16 @@ updateAccountUI();
 updateHistoryUI();
 updateSettingsUI();
 updateSecretPanelStatus();
-updateBotModeTheme();wait
+updateBotModeTheme();
 setTheme(theme);
 const menuLogo=document.getElementById('menu-logo');
 if(menuLogo){
   menuLogo.addEventListener('pointerdown',e=>{
     if(e.pointerType==='mouse'&&e.button!==0)return;
+    onMenuLogoTap();
+  });
+  menuLogo.addEventListener('click',e=>{
+    e.preventDefault();
     onMenuLogoTap();
   });
 }
