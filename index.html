@@ -1837,6 +1837,489 @@ function flashTap(slot,sk){
   const el=document.getElementById(`skb-${slot}-${sk}`);if(!el)return;
   el.classList.add('tapped');setTimeout(()=>el.classList.remove('tapped'),150);
 }
+const PLAYER_ANIM_DUR={
+  bump:260,
+  set:260,
+  tip:220,
+  spike_contact:320,
+  serve_hit:360,
+  save:280,
+  block_press:240,
+  land:220
+};
+function createPlayerAnimState(slot){
+  return{
+    action:'',
+    actionAt:0,
+    actionDur:0,
+    actionData:null,
+    lastX:slotStartX(slot),
+    lastVy:0,
+    vx:0,
+    lastOnGround:true,
+    airAt:0,
+    landAt:0,
+    landStrength:0,
+    facing:slotSide(slot)===0?1:-1,
+    phaseSeed:slot*0.77
+  };
+}
+function ensurePlayerAnimState(p,slot){
+  if(!p.anim)p.anim=createPlayerAnimState(slot);
+  return p.anim;
+}
+function triggerPlayerAction(slot,action,dur,data={}){
+  const p=PL[slot];if(!p)return;
+  const anim=ensurePlayerAnimState(p,slot);
+  const now=frameNow||performance.now();
+  anim.action=action;
+  anim.actionAt=now;
+  anim.actionDur=dur||PLAYER_ANIM_DUR[action]||240;
+  anim.actionData=data;
+}
+function updatePlayerAnimState(p,slot){
+  const anim=ensurePlayerAnimState(p,slot);
+  const now=frameNow||performance.now();
+  const dx=p.x-anim.lastX;
+  anim.vx=anim.vx*0.68+dx*0.32;
+  anim.lastX=p.x;
+  anim.facing=slotSide(slot)===0?1:-1;
+  if(anim.lastOnGround&&!p.onGround)anim.airAt=now;
+  if(!anim.lastOnGround&&p.onGround){
+    anim.landAt=now;
+    const airMs=anim.airAt?now-anim.airAt:0;
+    anim.landStrength=Math.max(0.32,Math.min(1,(Math.abs(anim.lastVy)/9.5)+(airMs/420)));
+  }
+  anim.lastOnGround=p.onGround;
+  anim.lastVy=p.vy;
+  p.vx=anim.vx;
+  if(anim.action&&now-anim.actionAt>anim.actionDur)anim.action='';
+  return anim;
+}
+function playerIntent(slot,p,anim){
+  const blockHeld=blockingSlots.has(slot)||(slot===2&&aiState.blocking);
+  const ch=charge[slot]?charge[slot].skill:'';
+  const aiSpikeIntent=slot===2&&aiState.plan&&aiState.plan.mode==='attack'&&aiState.plan.skill==='spike';
+  const aiSetIntent=slot===2&&aiState.plan&&aiState.plan.mode==='set';
+  if(phase==='waiting'&&serving===slot)return'serve_toss';
+  if(blockHeld)return p.onGround?'block_load':'block';
+  if(anim.action==='serve_hit')return'serve_hit';
+  if(anim.action==='spike_contact')return'spike_contact';
+  if(anim.action==='bump'||anim.action==='save')return anim.action;
+  if(anim.action==='set')return'set';
+  if(anim.action==='tip')return'tip';
+  if(anim.action==='block_press')return'block_press';
+  if(ch==='set'||aiSetIntent)return'set_ready';
+  if(ch==='bump')return'receive_ready';
+  if(ch==='tip')return'tip_ready';
+  if(spikeHeld[slot]||ch==='spike'||aiSpikeIntent){
+    if(!p.onGround)return'spike_air';
+    return Math.abs(anim.vx)>0.48?'spike_approach':'spike_load';
+  }
+  if(!p.onGround)return'jump';
+  if(anim.landAt&&(frameNow||performance.now())-anim.landAt<PLAYER_ANIM_DUR.land)return'land';
+  if(Math.abs(anim.vx)>0.32)return'run';
+  return'idle';
+}
+function animProgress(anim,scale=1){
+  const now=frameNow||performance.now();
+  if(!anim.actionDur)return 1;
+  return Math.max(0,Math.min(1,(now-anim.actionAt)/(anim.actionDur*scale)));
+}
+function lerpNum(a,b,t){return a+(b-a)*t;}
+function easeOutCubic(t){t=Math.max(0,Math.min(1,t));return 1-Math.pow(1-t,3);}
+function easeInOutSine(t){t=Math.max(0,Math.min(1,t));return-(Math.cos(Math.PI*t)-1)/2;}
+function easeOutBack(t){
+  t=Math.max(0,Math.min(1,t));
+  const c1=1.70158,c3=c1+1;
+  return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2);
+}
+function createPlayerPose(){
+  return{
+    hipY:PH-18,
+    hipShift:0,
+    torsoAngle:-1.57,
+    torsoLen:18,
+    headOffsetX:0,
+    headOffsetY:-10.5,
+    headTilt:0,
+    shoulderSpread:5.2,
+    hipSpread:4.8,
+    frontUpperArm:1.32,
+    frontLowerArm:1.4,
+    backUpperArm:1.7,
+    backLowerArm:1.52,
+    frontUpperLeg:1.38,
+    frontLowerLeg:1.54,
+    backUpperLeg:1.78,
+    backLowerLeg:1.46,
+    frontFoot:0.06,
+    backFoot:-0.04,
+    rearAlpha:0.68,
+    handLink:0,
+    shoulderLift:0
+  };
+}
+function blendPose(base,patch,w=1){
+  Object.keys(patch).forEach(k=>{
+    if(typeof patch[k]==='number')base[k]=lerpNum(base[k],patch[k],w);
+  });
+  return base;
+}
+function buildPlayerPose(p,slot,anim){
+  const pose=createPlayerPose();
+  const now=frameNow||performance.now();
+  const dir=anim.facing;
+  const moveMag=Math.min(1,Math.abs(anim.vx)/Math.max(1,moveSpeedFor(slot)));
+  const runPhase=now*0.018*(0.6+moveMag*1.3)+anim.phaseSeed;
+  const swing=Math.sin(runPhase);
+  pose.hipShift+=swing*2.4*moveMag;
+  pose.torsoAngle+=swing*0.05*moveMag*dir;
+  pose.frontUpperLeg+=swing*0.42*moveMag;
+  pose.backUpperLeg-=swing*0.42*moveMag;
+  pose.frontLowerLeg-=Math.max(0,swing)*0.28*moveMag;
+  pose.backLowerLeg-=Math.max(0,-swing)*0.28*moveMag;
+  pose.frontUpperArm-=swing*0.32*moveMag;
+  pose.backUpperArm+=swing*0.32*moveMag;
+  pose.frontLowerArm-=swing*0.12*moveMag;
+  pose.backLowerArm+=swing*0.12*moveMag;
+
+  const intent=playerIntent(slot,p,anim);
+  if(intent==='serve_toss'||intent==='serve_ready'){
+    blendPose(pose,{
+      hipY:PH-15.6,torsoAngle:-1.44,torsoLen:18.9,
+      hipShift:dir*1.8,
+      frontUpperArm:-0.38,frontLowerArm:-0.92,
+      backUpperArm:2.55,backLowerArm:2.12,
+      frontUpperLeg:1.28,frontLowerLeg:1.44,
+      backUpperLeg:1.76,backLowerLeg:1.46,
+      headTilt:0.1
+    },0.92);
+  }
+  if(intent==='receive_ready'){
+    blendPose(pose,{
+      hipY:PH-14,torsoAngle:-1.38,torsoLen:17,
+      frontUpperArm:0.8,frontLowerArm:0.45,
+      backUpperArm:0.92,backLowerArm:0.52,
+      frontUpperLeg:1.48,frontLowerLeg:1.7,
+      backUpperLeg:1.8,backLowerLeg:1.62,
+      handLink:0.72
+    },0.9);
+  }
+  if(intent==='set_ready'){
+    blendPose(pose,{
+      hipY:PH-15,torsoAngle:-1.54,torsoLen:18.3,
+      frontUpperArm:-1.0,frontLowerArm:-1.4,
+      backUpperArm:-1.14,backLowerArm:-1.46,
+      frontUpperLeg:1.42,frontLowerLeg:1.58,
+      backUpperLeg:1.66,backLowerLeg:1.52
+    },0.86);
+  }
+  if(intent==='tip_ready'){
+    blendPose(pose,{
+      hipY:PH-15.2,torsoAngle:-1.44,torsoLen:18.1,
+      frontUpperArm:-0.55,frontLowerArm:-1.08,
+      backUpperArm:2.32,backLowerArm:1.66,
+      frontUpperLeg:1.34,frontLowerLeg:1.52,
+      backUpperLeg:1.72,backLowerLeg:1.48
+    },0.82);
+  }
+  if(intent==='spike_approach'){
+    blendPose(pose,{
+      hipY:PH-14.2,torsoAngle:-1.18,torsoLen:17.4,
+      hipShift:pose.hipShift+dir*4.6,
+      frontUpperArm:0.44,frontLowerArm:0.1,
+      backUpperArm:2.74,backLowerArm:2.24,
+      frontUpperLeg:1.02,frontLowerLeg:1.36,
+      backUpperLeg:2.08,backLowerLeg:1.08,
+      frontFoot:0.18,
+      backFoot:-0.18,
+      headTilt:0.12
+    },0.94);
+  }
+  if(intent==='spike_load'){
+    const loadPulse=0.5+0.5*Math.sin(now*0.024+slot*0.7);
+    blendPose(pose,{
+      hipY:PH-11.8-loadPulse*0.8,torsoAngle:-1.25,torsoLen:16.4,
+      hipShift:pose.hipShift+dir*3.5,
+      frontUpperArm:2.45,frontLowerArm:2.12,
+      backUpperArm:2.68,backLowerArm:2.18,
+      frontUpperLeg:1.18,frontLowerLeg:1.86,
+      backUpperLeg:2.05,backLowerLeg:1.36
+    },0.96);
+  }
+  if(intent==='block_load'){
+    blendPose(pose,{
+      hipY:PH-12.6,torsoAngle:-1.47,torsoLen:17,
+      frontUpperArm:2.28,frontLowerArm:2.02,
+      backUpperArm:2.4,backLowerArm:2.06,
+      frontUpperLeg:1.36,frontLowerLeg:1.8,
+      backUpperLeg:1.78,backLowerLeg:1.56
+    },0.94);
+  }
+  if(!p.onGround){
+    const airMs=anim.airAt?now-anim.airAt:0;
+    const hang=Math.min(1,airMs/240);
+    blendPose(pose,{
+      hipY:PH-17.8,
+      torsoAngle:intent==='spike_air'||intent==='spike_contact'?-1.3:-1.52,
+      torsoLen:intent==='spike_air'||intent==='spike_contact'?19.4:18.4,
+      frontUpperLeg:intent==='block'?1.56:1.78,
+      frontLowerLeg:intent==='block'?1.48:1.26,
+      backUpperLeg:intent==='block'?1.6:1.98,
+      backLowerLeg:intent==='block'?1.52:1.34,
+      frontFoot:-0.12,
+      backFoot:0.08
+    },0.78+hang*0.18);
+  }
+  if(intent==='jump'){
+    blendPose(pose,{
+      frontUpperArm:-0.45,frontLowerArm:-0.9,
+      backUpperArm:3.46,backLowerArm:3.92
+    },0.72);
+  }
+  if(intent==='block'){
+    blendPose(pose,{
+      torsoAngle:-1.56,torsoLen:19.2,
+      frontUpperArm:-1.3,frontLowerArm:-1.58,
+      backUpperArm:-1.46,backLowerArm:-1.64,
+      frontUpperLeg:1.58,frontLowerLeg:1.42,
+      backUpperLeg:1.68,backLowerLeg:1.44
+    },0.96);
+  }
+  if(intent==='land'){
+    const t=Math.max(0,Math.min(1,(now-anim.landAt)/PLAYER_ANIM_DUR.land));
+    const w=(1-easeOutCubic(t))*anim.landStrength;
+    blendPose(pose,{
+      hipY:PH-10.8,torsoAngle:-1.35,torsoLen:16.5,
+      frontUpperArm:1.72,frontLowerArm:1.36,
+      backUpperArm:1.38,backLowerArm:1.28,
+      frontUpperLeg:1.18,frontLowerLeg:1.92,
+      backUpperLeg:1.9,backLowerLeg:1.72
+    },w);
+  }
+  if(anim.action==='bump'){
+    const t=animProgress(anim);
+    const w=1-(t>0.7?(t-0.7)/0.3:0);
+    blendPose(pose,{
+      hipY:PH-12.8,torsoAngle:-1.34,torsoLen:16.8,
+      frontUpperArm:0.62,frontLowerArm:0.26,
+      backUpperArm:0.7,backLowerArm:0.3,
+      frontUpperLeg:1.44,frontLowerLeg:1.72,
+      backUpperLeg:1.86,backLowerLeg:1.6,
+      handLink:1
+    },w);
+  }
+  if(anim.action==='save'){
+    const t=animProgress(anim);
+    const lunge=anim.actionData&&anim.actionData.dir?anim.actionData.dir:dir;
+    blendPose(pose,{
+      hipShift:pose.hipShift+lunge*7.5*(1-t),
+      hipY:PH-12.2,torsoAngle:-1.18,torsoLen:16.4,
+      frontUpperArm:lunge===dir?0.2:1.2,
+      frontLowerArm:lunge===dir?-0.05:0.75,
+      backUpperArm:lunge===dir?1.3:0.35,
+      backLowerArm:lunge===dir?1.05:0.15,
+      frontUpperLeg:1.02,frontLowerLeg:1.96,
+      backUpperLeg:2.12,backLowerLeg:1.44,
+      handLink:0.62
+    },0.98);
+  }
+  if(anim.action==='set'){
+    const t=animProgress(anim);
+    const w=t<0.5?easeOutCubic(t/0.5):1-(t-0.5)*0.22;
+    blendPose(pose,{
+      hipY:PH-13.4,torsoAngle:-1.52,torsoLen:18.8,
+      frontUpperArm:-1.02,frontLowerArm:-1.46,
+      backUpperArm:-1.16,backLowerArm:-1.52,
+      frontUpperLeg:1.38,frontLowerLeg:1.6,
+      backUpperLeg:1.68,backLowerLeg:1.54
+    },w);
+  }
+  if(anim.action==='tip'){
+    const t=animProgress(anim);
+    blendPose(pose,{
+      torsoAngle:-1.34,torsoLen:18.9,
+      frontUpperArm:-0.66,frontLowerArm:-1.18,
+      backUpperArm:2.72,backLowerArm:2.1,
+      frontUpperLeg:1.42,frontLowerLeg:1.44,
+      backUpperLeg:1.84,backLowerLeg:1.3
+    },1-(t*0.18));
+  }
+  if(anim.action==='spike_contact'){
+    const t=animProgress(anim);
+    const swingT=t<0.45?easeOutBack(t/0.45):1;
+    const followT=t>0.45?easeInOutSine((t-0.45)/0.55):0;
+    blendPose(pose,{
+      hipY:PH-17.6,torsoAngle:lerpNum(-1.16,-1.44,followT),torsoLen:19.6,
+      frontUpperArm:lerpNum(-0.24,0.98,followT),
+      frontLowerArm:lerpNum(-1.26,0.42,followT),
+      backUpperArm:lerpNum(2.54,2.08,followT),
+      backLowerArm:lerpNum(2.05,1.52,followT),
+      frontUpperLeg:1.48,frontLowerLeg:1.28,
+      backUpperLeg:1.96,backLowerLeg:1.22
+    },swingT);
+  }
+  if(anim.action==='serve_hit'){
+    const t=animProgress(anim);
+    const release=t<0.45?easeOutCubic(t/0.45):1;
+    const recover=t>0.45?easeInOutSine((t-0.45)/0.55):0;
+    blendPose(pose,{
+      hipShift:dir*3.2*(1-recover),
+      torsoAngle:lerpNum(-1.32,-1.5,recover),torsoLen:18.8,
+      frontUpperArm:lerpNum(-0.18,0.58,recover),
+      frontLowerArm:lerpNum(-1.0,0.28,recover),
+      backUpperArm:lerpNum(2.58,1.82,recover),
+      backLowerArm:lerpNum(2.0,1.3,recover),
+      frontUpperLeg:1.26,frontLowerLeg:1.48,
+      backUpperLeg:1.78,backLowerLeg:1.42
+    },release);
+  }
+  if(anim.action==='block_press'){
+    blendPose(pose,{
+      torsoAngle:-1.56,torsoLen:19.1,
+      frontUpperArm:-1.38,frontLowerArm:-1.6,
+      backUpperArm:-1.52,backLowerArm:-1.66,
+      frontUpperLeg:1.62,frontLowerLeg:1.38,
+      backUpperLeg:1.74,backLowerLeg:1.4
+    },1);
+  }
+  return{pose,intent,dir};
+}
+function posePoint(origin,len,ang,dir){
+  const a=dir===1?ang:Math.PI-ang;
+  return{x:origin.x+Math.cos(a)*len,y:origin.y+Math.sin(a)*len};
+}
+function drawBone(a,b,w,col,alpha=1){
+  cx.save();
+  cx.globalAlpha=alpha;
+  cx.strokeStyle=col;
+  cx.lineWidth=w;
+  cx.lineCap='round';
+  cx.beginPath();
+  cx.moveTo(a.x,a.y);
+  cx.lineTo(b.x,b.y);
+  cx.stroke();
+  cx.restore();
+}
+function drawFoot(pt,ang,dir,col){
+  const a=dir===1?ang:Math.PI-ang;
+  cx.save();
+  cx.translate(pt.x,pt.y);
+  cx.rotate(a);
+  cx.fillStyle=col;
+  cx.beginPath();
+  cx.roundRect(-1.5,-2,12,4.4,2);
+  cx.fill();
+  cx.restore();
+}
+function drawPlayerBody(c,top,slot,col,dark,p,animPack,shoeCos,headCos,armCos,pulse){
+  const {pose,dir}=animPack;
+  const hip={x:c+pose.hipShift,y:top+pose.hipY};
+  const torsoBase={x:hip.x,y:hip.y};
+  const shoulder=posePoint(torsoBase,pose.torsoLen,pose.torsoAngle,dir);
+  const head={x:shoulder.x+pose.headOffsetX*dir,y:shoulder.y+pose.headOffsetY};
+  const shoulderFront={x:shoulder.x+pose.shoulderSpread*dir,y:shoulder.y-pose.shoulderLift};
+  const shoulderBack={x:shoulder.x-pose.shoulderSpread*dir,y:shoulder.y-pose.shoulderLift*0.7};
+  const hipFront={x:hip.x+pose.hipSpread*dir,y:hip.y};
+  const hipBack={x:hip.x-pose.hipSpread*dir,y:hip.y};
+  const ua=10.5,la=10.5,ul=13,ll=12.5;
+  const frontElbow=posePoint(shoulderFront,ua,pose.frontUpperArm,dir);
+  const frontHand=posePoint(frontElbow,la,pose.frontLowerArm,dir);
+  const backElbow=posePoint(shoulderBack,ua,pose.backUpperArm,dir);
+  const backHand=posePoint(backElbow,la,pose.backLowerArm,dir);
+  const linkedFront=pose.handLink>0.05?{
+    x:lerpNum(frontHand.x,backHand.x,pose.handLink*0.55),
+    y:lerpNum(frontHand.y,backHand.y,pose.handLink*0.55)
+  }:frontHand;
+  const linkedBack=pose.handLink>0.05?{
+    x:lerpNum(backHand.x,frontHand.x,pose.handLink*0.55),
+    y:lerpNum(backHand.y,frontHand.y,pose.handLink*0.55)
+  }:backHand;
+  const frontKnee=posePoint(hipFront,ul,pose.frontUpperLeg,dir);
+  const frontFoot=posePoint(frontKnee,ll,pose.frontLowerLeg,dir);
+  const backKnee=posePoint(hipBack,ul,pose.backUpperLeg,dir);
+  const backFoot=posePoint(backKnee,ll,pose.backLowerLeg,dir);
+  const frontFootAngle=dir===1?pose.frontFoot:Math.PI-pose.frontFoot;
+  const backFootAngle=dir===1?pose.backFoot:Math.PI-pose.backFoot;
+  const shoeAnchors=[
+    {x:backFoot.x+Math.cos(backFootAngle)*1.8,y:backFoot.y+1.4,angle:backFootAngle},
+    {x:frontFoot.x+Math.cos(frontFootAngle)*1.8,y:frontFoot.y+1.4,angle:frontFootAngle}
+  ];
+  const armAnchor={
+    x:lerpNum(shoulderFront.x,frontElbow.x,0.54),
+    y:lerpNum(shoulderFront.y,frontElbow.y,0.54)
+  };
+
+  drawBone(hipBack,backKnee,6.5,dark,pose.rearAlpha);
+  drawBone(backKnee,backFoot,6.1,dark,pose.rearAlpha);
+  drawBone(shoulderBack,backElbow,5.8,'#f5d5a0',pose.rearAlpha);
+  drawBone(backElbow,linkedBack,5.3,'#f5d5a0',pose.rearAlpha);
+  drawFoot(backFoot,pose.backFoot,dir,'#111');
+
+  cx.save();
+  cx.shadowColor=col;
+  cx.shadowBlur=10;
+  cx.strokeStyle=col;
+  cx.lineWidth=13;
+  cx.lineCap='round';
+  cx.beginPath();
+  cx.moveTo(hip.x,hip.y);
+  cx.lineTo(shoulder.x,shoulder.y);
+  cx.stroke();
+  cx.shadowBlur=0;
+  cx.restore();
+
+  drawBone(hipFront,frontKnee,7,dark,1);
+  drawBone(frontKnee,frontFoot,6.4,dark,1);
+  drawBone(shoulderFront,frontElbow,6.1,'#f5d5a0',1);
+  drawBone(frontElbow,linkedFront,5.6,'#f5d5a0',1);
+  drawFoot(frontFoot,pose.frontFoot,dir,'#111');
+
+  if(pose.handLink>0.1){
+    drawBone(linkedBack,linkedFront,4.2,'#f5d5a0',0.95);
+    drawBone(
+      {x:linkedBack.x+(dir*1.5),y:linkedBack.y-1},
+      {x:linkedFront.x+(dir*1.5),y:linkedFront.y-1},
+      4.8,'#f3e8c8',0.9
+    );
+  }
+
+  cx.save();
+  cx.fillStyle=col;
+  cx.globalAlpha=0.88;
+  cx.beginPath();
+  cx.roundRect(shoulder.x-7,shoulder.y-2,14,12,4);
+  cx.fill();
+  cx.restore();
+
+  cx.save();
+  cx.translate(head.x,head.y);
+  cx.rotate(pose.headTilt*dir);
+  cx.fillStyle='#f5d5a0';
+  cx.beginPath();
+  cx.arc(0,0,10,0,Math.PI*2);
+  cx.fill();
+  cx.fillStyle='#4a2e10';
+  cx.beginPath();
+  cx.arc(0,-5,9,Math.PI,Math.PI*2);
+  cx.fill();
+  cx.fillRect(-9,-5,18,4);
+  const eyeDx=Math.max(-2.8,Math.min(2.8,(ball.x-head.x)*0.05));
+  const eyeDy=Math.max(-1.2,Math.min(1.8,(ball.y-head.y)*0.03));
+  cx.fillStyle='#111';
+  cx.beginPath();cx.arc(-3+eyeDx,1+eyeDy,1.4,0,Math.PI*2);cx.fill();
+  cx.beginPath();cx.arc(3+eyeDx,1+eyeDy,1.4,0,Math.PI*2);cx.fill();
+  cx.restore();
+
+  if(headCos)drawAccessoryHeadband(head.x,head.y-9,headCos,pulse);
+  if(shoeCos){
+    drawAccessoryShoes(c,top,shoeCos,pulse,p,shoeAnchors);
+  }
+  if(armCos){
+    drawAccessoryArmband(c,top,armCos,pulse,armAnchor);
+  }
+}
 
 function isMobileLayout(){
   return window.matchMedia('(pointer: coarse)').matches||window.innerWidth<=900;
@@ -2184,15 +2667,19 @@ function doHitLocal(slot,pwr,skill,force=false){
     const drift=(side===0?1:-1)*(0.5+pr*0.8);
     ball.vx=drift*spM*bumpMul;ball.vy=-(14+pr*7)*spM*bumpMul;
     doFlash('BUMP','#00d4ff');spawnParts(ball.x,ball.y,'#00d4ff',12);flashTap(slot,'bump');sndBump();
+    const emergencySave=!p.onGround||Math.abs(ddx)>PW*2.5||Math.abs(ball.vx)>6.2||ball.y<p.y+8;
+    triggerPlayerAction(slot,emergencySave?'save':'bump',emergencySave?PLAYER_ANIM_DUR.save:PLAYER_ANIM_DUR.bump,{dir:ddx>=0?1:-1});
   } else if(skill==='set'){
     const st=side===0?nx()-(60-pr*40):nx()+(60-pr*40);
     const sdx=st-ball.x;
     ball.vx=(sdx/Math.max(1,Math.abs(sdx)))*(2.5+pr*2)*spM*setMul;ball.vy=-(14+pr*5)*spM*setMul;
     doFlash('SET','#ffcc02');spawnParts(ball.x,ball.y,'#ffcc02',12);flashTap(slot,'set');sndSet();
+    triggerPlayerAction(slot,'set',PLAYER_ANIM_DUR.set);
   } else if(skill==='tip'){
     const dir=side===0?1:-1;
     ball.vx=dir*(3+pr*2);ball.vy=-(6+pr*3);
     doFlash('TIP','#ff2d78');spawnParts(ball.x,ball.y,'#ff2d78',8);flashTap(slot,'tip');sndTip();
+    triggerPlayerAction(slot,'tip',PLAYER_ANIM_DUR.tip);
   } else {
     const spikeDir=side===0?1:-1;
     const target=localSlots().includes(slot)?spikeTargetFor(slot):{
@@ -2216,6 +2703,7 @@ function doHitLocal(slot,pwr,skill,force=false){
     flashTap(slot,'spike');sndSpike();shake(14,18);
     const sf=document.getElementById('sflash');sf.classList.add('on');setTimeout(()=>sf.classList.remove('on'),180);
     localStats.spikes[side]++;
+    triggerPlayerAction(slot,'spike_contact',PLAYER_ANIM_DUR.spike_contact);
   }
   ball.x=cxp+ndx*(md+1);ball.y=cyp+ndy*(md+1);
   updateSkillBar();
@@ -2241,6 +2729,7 @@ function checkLocalBlocks(){
       const sf=document.getElementById('sflash');sf.classList.add('block');setTimeout(()=>sf.classList.remove('block'),100);
       doFlash('BLOCK!','#00ff88');spawnParts(ball.x,ball.y,'#00ff88',16);
       localStats.blocks[side]++;
+      triggerPlayerAction(slot,'block_press',PLAYER_ANIM_DUR.block_press);
     }
   });
 }
@@ -3845,6 +4334,7 @@ function showLocalStats(win){showStats(localStats,localStats.longestRally,win);}
 function serveLocal(){
   if(phase!=='waiting')return;
   if(gmode==='online'&&mySlot!==serving)return;
+  triggerPlayerAction(serving,'serve_hit',PLAYER_ANIM_DUR.serve_hit);
   phase='playing';hideOv();setHm('');
   lastHitSlot=-1;ball.vx=0;ball.vy=-(11+Math.random()*2);
   if(rallyHits===0)localStats.aces[slotSide(serving)]++;
@@ -4385,44 +4875,18 @@ function showBrainStatus(){
 }
 */
 function botTargetX(ai,pred,hx,hn,onSide){
-  const profile=botProfile();
-  const backLine=slotMaxX(2)-PW-16;
-  const center=nx()+W*0.18;
-  const nearNet=nx()+58;
-  const setterLane=nx()+92;
-  const oppNearNet=hx>nx()-96;
-  const oppDeep=hx<nx()*0.33;
-  const blockLane=Math.max(nearNet,Math.min(backLine,hx+10));
-  const approachLane=oppDeep?nx()+86:Math.min(backLine,nx()+W*0.22);
-  const humanBias=hx<nx()*0.5?nx()+W*0.30:nx()+W*0.09;
-  const err=(Math.random()-.5)*DIFF[diff].err*botErrorScale()*(hn===0?1:0.5);
-  const landing=Math.max(nearNet,Math.min(backLine,pred.x-PW/2));
-  const defend=Math.max(nearNet,Math.min(backLine,center+(humanBias-center)*0.35));
-  const receiveLead=ball.vx>0?profile.receiveLead:-profile.receiveLead*0.45;
-
-  if(!onSide){
-    const inboundToBot=(ball.vx>0.65||serving===0)&&pred.x>nx()+18;
-    const opponentAttackWindow=sideHits[0]>=1&&oppNearNet&&ball.x>nx()-120&&ball.x<nx()+110&&ball.y<fl()-92;
-    if(opponentAttackWindow)return Math.max(nearNet,Math.min(backLine,blockLane+err*0.18));
-    if(inboundToBot)return Math.max(nearNet,Math.min(backLine,landing+err*0.35+receiveLead*0.28));
-    return Math.max(nearNet,Math.min(backLine,defend+err));
-  }
-  if(hn===0){
-    return Math.max(nearNet,Math.min(backLine,landing+err+receiveLead));
-  }
-  if(hn===1){
-    if(ball.y>fl()-92||Math.abs(ball.vx)>4.8)return Math.max(nearNet,Math.min(backLine,landing+err*0.35));
-    return Math.max(nearNet,Math.min(backLine,setterLane+(profile.key==='easy'?10:profile.key==='med'?4:-4)+err*0.24));
-  }
-  const attackLane=oppNearNet&&!oppDeep?approachLane+18:approachLane;
-  return Math.max(nearNet,Math.min(backLine,attackLane+err*0.22));
+  if(aiState.plan)return aiState.plan.moveX;
+  const opp=botOpponentRead();
+  return botBuildPlan(ai,pred,hx,hn,onSide,opp).moveX;
 }
-function botShouldJump(ai,hn,onSide,dist){
+function botShouldJump(ai,plan,dist){
   const profile=botProfile();
-  if(!ai.onGround||!onSide)return false;
-  if(hn>=2)return ball.y<fl()-DIFF[diff].jt*(1.06+profile.jumpBias)&&ball.y>nt()+20&&dist<168;
-  if(hn===1)return profile.key==='hard'&&ball.x<nx()+82&&ball.y<fl()-DIFF[diff].jt*(0.62+profile.jumpBias*0.32)&&ball.y>nt()+20&&dist<82&&Math.random()<profile.quickKill*0.22;
-  return false;
+  if(!ai.onGround||!plan)return false;
+  if(plan.wantBlock){
+    return plan.opp.attackWindow&&ball.x>nx()-86+(plan.imperfection.blockLate*18)&&ball.y<fl()-94&&Math.abs((ai.x+PW/2)-nx())<128;
+  }
+  if(plan.mode!=='attack'||plan.skill!=='spike')return false;
+  return plan.attackWindow.open&&plan.forecast.y<fl()-Math.max(46,DIFF[diff].jt*(1.02+profile.jumpBias))&&plan.forecast.y>nt()+18&&dist<174;
 }
 function botCanReachNow(ai,skill='bump',mult=1.12){
   if(!ai)return false;
@@ -4456,6 +4920,304 @@ function botOpponentRead(){
     airborne:!!(player&&!player.onGround),
     attackWindow:!!(player&&(sideHits[0]>=1||!player.onGround)&&px>nx()-118&&ball.x>nx()-132&&ball.x<nx()+122&&ball.y<fl()-84)
   };
+}
+function botClamp01(v){
+  return Math.max(0,Math.min(1,v));
+}
+function createAiMemory(){
+  const baseNet=Number.isFinite(W)?nx():0;
+  return{
+    lastMode:'receive',
+    lastTouch:0,
+    lastSkill:'bump',
+    receiveTargetX:baseNet+90,
+    setTargetX:baseNet+108,
+    attackTargetX:baseNet-70,
+    attackLabel:'seam',
+    opponentNearNet:false,
+    opponentDeep:false
+  };
+}
+function createAiState(){
+  return{
+    blocking:false,
+    blockCool:0,
+    trickUsed:false,
+    serveAt:0,
+    mode:'receive',
+    plan:null,
+    memory:createAiMemory()
+  };
+}
+function botForecastPlayableBall(ai,pred){
+  const aiCx=ai?ai.x+PW/2:nx()+W*0.2;
+  let px=ball.x,py=ball.y,pvx=ball.vx,pvy=ball.vy;
+  let best=null;
+  for(let st=1;st<=90;st++){
+    pvy+=G;px+=pvx;py+=pvy;pvx*=0.996;
+    if(px+BR>nx()-NW/2&&px-BR<nx()+NW/2&&py+BR>nt()){
+      pvx=pvx>0?-Math.abs(pvx)*0.55:Math.abs(pvx)*0.55;
+      px=pvx<0?nx()-NW/2-BR:nx()+NW/2+BR;
+      pvy*=0.65;
+    }
+    if(py>=fl()-BR)break;
+    if(px>nx()+8&&py>nt()+10&&py<fl()-22){
+      const dx=Math.abs(px-aiCx);
+      const score=dx*1.05+st*4+Math.abs(py-(fl()-150))*0.28;
+      if(!best||score<best.score)best={x:px,y:py,steps:st,vx:pvx,vy:pvy,score};
+    }
+  }
+  if(best)return best;
+  return{
+    x:Math.max(nx()+20,Math.min(slotMaxX(2)-PW/2,pred.x)),
+    y:Math.max(nt()+18,Math.min(fl()-24,ball.y)),
+    steps:Math.min(90,pred.steps||32),
+    vx:ball.vx,
+    vy:ball.vy,
+    score:999
+  };
+}
+function botFrameMode(hn,onSide,opp,forecast){
+  if(onSide){
+    if(hn<=0)return'receive';
+    if(hn===1)return'set';
+    return'attack';
+  }
+  if(opp.attackWindow&&forecast.steps<=18)return'attack';
+  return'receive';
+}
+function botBallQuality(ai,mode,forecast){
+  const aiCx=ai.x+PW/2;
+  const dist=Math.abs(forecast.x-aiCx);
+  const netDist=Math.abs(forecast.x-nx());
+  const speed=Math.hypot(forecast.vx,forecast.vy);
+  const desiredY=mode==='attack'?fl()-164:mode==='set'?fl()-150:fl()-140;
+  const desiredNet=mode==='attack'?84:mode==='set'?98:132;
+  const desiredTime=mode==='attack'?8:mode==='set'?11:15;
+  const heightScore=botClamp01(1-Math.abs(forecast.y-desiredY)/132);
+  const distanceScore=botClamp01(1-dist/(mode==='attack'?168:188));
+  const netScore=botClamp01(1-Math.abs(netDist-desiredNet)/(mode==='receive'?124:96));
+  const speedBase=mode==='receive'?7.2:6.1;
+  const speedScore=botClamp01(1-Math.abs(speed-speedBase)/6.8);
+  const timeScore=botClamp01(1-Math.abs(forecast.steps-desiredTime)/18);
+  const score=botClamp01(heightScore*0.24+distanceScore*0.28+netScore*0.18+speedScore*0.12+timeScore*0.18);
+  return{
+    score,
+    heightScore,
+    distanceScore,
+    netScore,
+    speedScore,
+    timeScore,
+    dist,
+    netDist,
+    speed,
+    underPressure:score<0.42||timeScore<0.3||speedScore<0.3
+  };
+}
+function botAttackWindow(ai,forecast,quality){
+  const aiCx=ai.x+PW/2;
+  const laneScore=botClamp01(1-Math.abs(forecast.x-aiCx)/152);
+  const heightOk=forecast.y<fl()-108&&forecast.y>nt()+14;
+  const closeToNet=forecast.x>nx()+24&&forecast.x<nx()+142;
+  const safeNet=forecast.x>nx()+42||forecast.y<fl()-128;
+  const open=heightOk&&closeToNet&&safeNet&&laneScore>0.24&&quality.score>0.38&&quality.timeScore>0.16;
+  const forceable=heightOk&&safeNet&&laneScore>0.18&&quality.heightScore>0.46&&quality.distanceScore>0.34;
+  return{open,forceable,laneScore,heightOk,closeToNet,safeNet};
+}
+function botPlanImperfection(mode,quality,profile,memory){
+  const caution=botClamp01((1-quality.score)*0.75+profile.errorScale*0.45);
+  const footworkLag=botClamp01((1-quality.timeScore)*0.7+profile.errorScale*0.2);
+  const footworkX=(memory.opponentNearNet?-1:1)*(mode==='receive'?12:8)*caution;
+  const setDriftX=(memory.opponentDeep?-1:1)*14*caution;
+  const blockLate=botClamp01((1-quality.timeScore)*0.85+profile.errorScale*0.18);
+  return{caution,footworkLag,footworkX,setDriftX,blockLate};
+}
+function botModeTarget(mode,quality,opp,memory,profile){
+  if(mode==='receive'){
+    const carry=(memory.receiveTargetX-(nx()+90))*0.18;
+    return{
+      label:'receive-zone',
+      x:nx()+90+carry+(profile.key==='hard'?6:profile.key==='easy'?-4:0),
+      y:fl()-154-(quality.score*8)
+    };
+  }
+  if(mode==='set'){
+    const receiveCarry=(memory.receiveTargetX-(nx()+90))*0.12;
+    return{
+      label:'attack-zone',
+      x:nx()+108+receiveCarry+(opp.deep?10:-4),
+      y:fl()-192
+    };
+  }
+  const deepCorner=opp.x<nx()*0.5?nx()-NW/2-84:30;
+  const seam=nx()-NW/2-66;
+  const shortPocket=nx()-NW/2-48;
+  let label='seam';
+  if(profile.key==='easy'){
+    label=quality.underPressure||opp.nearNet?'deep':'seam';
+  }else if(profile.key==='med'){
+    label=(quality.score>0.82&&!opp.nearNet&&!opp.deep&&memory.attackLabel!=='short')?'short':(opp.deep?'deep':opp.nearNet?'deep':'seam');
+  }else{
+    label=opp.nearNet?'deep':(quality.score>0.66?'seam':'deep');
+  }
+  return{
+    label,
+    x:label==='deep'?deepCorner:label==='short'?shortPocket:seam,
+    y:label==='short'?nt()+58:fl()-26
+  };
+}
+function botPlanSkill(mode,quality,attackWindow,opp,profile,target,memory){
+  if(mode==='receive'){
+    if(!quality.underPressure&&quality.heightScore>0.74&&quality.netScore>0.56&&profile.receiveSetChance>0.1&&memory.lastMode!=='set')return'set';
+    return'bump';
+  }
+  if(mode==='set'){
+    if(attackWindow.closeToNet&&attackWindow.safeNet&&quality.score>0.76&&opp.deep&&profile.dumpChance>0.04)return'tip';
+    return quality.score>0.34?'set':'bump';
+  }
+  if(attackWindow.open||attackWindow.forceable){
+    if(target.label==='short'&&quality.score<0.56)return'tip';
+    return'spike';
+  }
+  if(attackWindow.safeNet&&quality.heightScore>0.34&&quality.distanceScore>0.28&&quality.timeScore>0.12){
+    if(target.label!=='short'||quality.score>0.68)return'spike';
+  }
+  if(!quality.underPressure&&target.label==='short')return'tip';
+  if(quality.score<0.2||quality.timeScore<0.08)return'bump';
+  return attackWindow.safeNet?'spike':'tip';
+}
+function botBuildPlan(ai,pred,hx,hn,onSide,opp){
+  const profile=botProfile();
+  const memory=aiState.memory||createAiMemory();
+  const forecast=botForecastPlayableBall(ai,pred);
+  const mode=botFrameMode(hn,onSide,opp,forecast);
+  const quality=botBallQuality(ai,mode,forecast);
+  const attackWindow=botAttackWindow(ai,forecast,quality);
+  const imperfection=botPlanImperfection(mode,quality,profile,memory);
+  const target=botModeTarget(mode,quality,opp,memory,profile);
+  const skill=botPlanSkill(mode,quality,attackWindow,opp,profile,target,memory);
+  const nearNet=nx()+58;
+  const backLine=slotMaxX(2)-PW-16;
+  let moveCenter;
+  if(mode==='receive'){
+    moveCenter=forecast.x+(ball.vx>0?profile.receiveLead:-profile.receiveLead*0.35)-imperfection.footworkX;
+  }else if(mode==='set'){
+    moveCenter=(target.x*0.62+forecast.x*0.38)-imperfection.setDriftX*0.22;
+  }else{
+    const approach=target.label==='deep'?nx()+86:target.label==='short'?nx()+72:nx()+96;
+    moveCenter=(approach*0.58+forecast.x*0.42)-imperfection.footworkX*0.18;
+  }
+  const moveX=Math.max(nearNet,Math.min(backLine,moveCenter-PW/2));
+  return{
+    mode,
+    skill,
+    forecast,
+    quality,
+    attackWindow,
+    imperfection,
+    opp,
+    moveX,
+    targetX:target.x,
+    targetY:target.y,
+    targetLabel:target.label,
+    wantBlock:!onSide&&mode==='attack'&&opp.attackWindow,
+    memoryTouch:hn
+  };
+}
+function botApplyPlannedTrajectory(skill,plan){
+  const profile=botProfile();
+  const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+  const tx=clamp(plan.targetX,18,W-18);
+  const ty=clamp(plan.targetY,nt()+20,fl()-24);
+  const dx=tx-ball.x;
+  if(skill==='bump'){
+    const freeBall=plan.mode==='attack'||plan.quality.underPressure;
+    ball.vx=clamp(dx/(freeBall?18:24),freeBall?-8.2:-3.6,freeBall?3.2:3.1);
+    ball.vy=-(freeBall?profile.freeBallLift:profile.passLift)+(freeBall?-plan.imperfection.caution*0.5:-Math.max(0,(1-plan.quality.heightScore))*0.7);
+    return;
+  }
+  if(skill==='set'){
+    ball.vx=clamp(dx/22,-3.9,3.2);
+    ball.vy=-(profile.setLift+Math.max(0,(1-plan.quality.score))*1.05+Math.abs(plan.imperfection.setDriftX)*0.01);
+    return;
+  }
+  if(skill==='tip'){
+    ball.vx=clamp(dx/15,-8.4,-2.8);
+    if(ball.vx>-2.8)ball.vx=-2.8;
+    ball.vy=-(ty<fl()-70?7.2:6.2)-profile.tipLiftBoost-Math.max(0,(1-plan.quality.score))*0.6;
+    return;
+  }
+  let hitDx=dx;
+  if(hitDx>-38)hitDx=-38;
+  const reach=Math.abs(hitDx);
+  const netDist=Math.max(18,ball.x-nx());
+  const targetDepth=Math.max(28,Math.abs(tx-nx()));
+  const spikeSpeed=9.8+reach/18+plan.attackWindow.laneScore*2.7+profile.spikeNudge*0.42;
+  const clearanceLift=netDist<72?1.15:netDist<108?0.82:0.5;
+  const depthLift=targetDepth<78?0.18:targetDepth>132?0.42:0.28;
+  const qualityLift=Math.max(0,(0.72-plan.quality.heightScore))*0.72;
+  ball.vx=-Math.max(9.1,Math.min(17.4,spikeSpeed));
+  ball.vx+=Math.sign(hitDx)*Math.min(1.2,reach/150);
+  ball.vy=-(5.15+clearanceLift+depthLift+qualityLift-(plan.targetLabel==='short'?0.2:0));
+}
+function botCanAssistPlannedTouch(ai,plan){
+  if(!ai||!plan)return false;
+  const want=plan.skill==='spike'?'spike':plan.skill==='set'?'set':'bump';
+  const dx=Math.abs(plan.forecast.x-(ai.x+PW/2));
+  const dy=Math.abs(plan.forecast.y-(ai.y+PH*0.35));
+  return dx<=(want==='spike'?48:64)&&dy<=(want==='spike'?68:96);
+}
+function botCommitPlanMemory(plan,skill,hn){
+  const memory=aiState.memory||createAiMemory();
+  memory.lastMode=plan.mode;
+  memory.lastTouch=hn;
+  memory.lastSkill=skill;
+  memory.opponentNearNet=plan.opp.nearNet;
+  memory.opponentDeep=plan.opp.deep;
+  if(plan.mode==='receive')memory.receiveTargetX=plan.targetX;
+  else if(plan.mode==='set')memory.setTargetX=plan.targetX;
+  else{
+    memory.attackTargetX=plan.targetX;
+    memory.attackLabel=plan.targetLabel;
+  }
+  aiState.memory=memory;
+}
+function botPerformPlannedTouch(ai,plan,hn,cfg,aiTune){
+  if(!plan)return false;
+  const skill=plan.skill;
+  const rangeSkill=skill==='spike'?'spike':skill==='set'?'set':'bump';
+  const canReach=botCanReachNow(ai,rangeSkill,plan.mode==='receive'?1.28:plan.mode==='set'?1.18:1.12);
+  const canAssist=botCanAssistPlannedTouch(ai,plan);
+  if(!canReach&&!canAssist)return false;
+  const power=skill==='spike'
+    ?Math.max(aiTune.pwrFloor,cfg.pwr())
+    :skill==='set'
+      ?Math.max(0.84,cfg.pwr())
+      :Math.max(0.8,cfg.pwr());
+  const needsForce=canAssist||(
+    skill==='spike'?!inRangeForSkill(2,'spike')
+    :skill==='tip'?!inRangeForSkill(2,'tip')
+    :skill==='set'?!inRangeForSkill(2,'set')
+    :!inRange(2)
+  );
+  if(needsForce){
+    const cx=ai.x+PW/2;
+    const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+    const desiredX=cx+clamp(ball.x-cx,skill==='spike'?-18:-22,skill==='spike'?18:22);
+    const desiredY=ai.y+clamp(ball.y-ai.y,-44,skill==='spike'?28:42);
+    ball.x+=clamp(desiredX-ball.x,-8,8);
+    ball.y+=clamp(desiredY-ball.y,-10,10);
+    doHitLocal(2,power,skill,true);
+  }else{
+    doHitLocal(2,power,skill);
+  }
+  botApplyPlannedTrajectory(skill,plan);
+  maybeTriggerBotTrick(skill);
+  botCommitPlanMemory(plan,skill,hn);
+  aiCool=skill==='spike'
+    ?(botProfile().key==='hard'?10:botProfile().key==='med'?12:15)
+    :Math.max(plan.mode==='set'?3:4,aiTune.coolMin-(plan.quality.score>0.7?1:0));
+  return true;
 }
 function botAttackProfile(ai,pressure,opp){
   const dist=Math.abs(ball.x-(ai.x+PW/2));
@@ -4545,13 +5307,12 @@ function botAssistTouch(ai,skill,pwr,hn,hx,pressure,attack){
   maybeTriggerBotTrick(skill);
   return true;
 }
-function botShouldBlockRead(ai,opp){
+function botShouldBlockRead(ai,plan){
   const profile=botProfile();
-  if(!ai.onGround||aiState.blockCool>0)return false;
+  if(!ai.onGround||aiState.blockCool>0||!plan||!plan.wantBlock)return false;
   if(Math.abs((ai.x+PW/2)-nx())>=132)return false;
-  if(!opp.attackWindow)return false;
-  const chance=profile.blockChance*(sideHits[0]>=2?1:0.58)*(opp.airborne?1.08:0.86);
-  return Math.random()<chance;
+  const stableRead=plan.quality.timeScore>(profile.key==='hard'?0.18:profile.key==='med'?0.24:0.3);
+  return stableRead&&ball.x>nx()-92+(plan.imperfection.blockLate*16)&&ball.y<fl()-92;
 }
 function chooseBotSkill(hn,ai,hx){
   const profile=botProfile();
@@ -4619,6 +5380,7 @@ function botServeLocal(){
   if(gmode!=='ai'||phase!=='waiting'||serving!==2)return;
   const ai=PL[2];if(!ai)return;
   const profile=botProfile();
+  triggerPlayerAction(2,'serve_hit',PLAYER_ANIM_DUR.serve_hit);
   const deepAim=humanX()<nx()*0.34?nx()-NW/2-86:40;
   const seamAim=humanX()<nx()*0.5?nx()-NW/2-68:60;
   const shortAim=nx()-NW/2-54;
@@ -4636,7 +5398,7 @@ function botServeLocal(){
   localStats.aces[1]++;
   doFlash(`${botModeName().toUpperCase()} SERVE`,botProfile().color,420,false);
 }
-let aiState={blocking:false,blockCool:0,trickUsed:false,serveAt:0};
+let aiState=createAiState();
 
 function aiTick(){
   const ai=PL[2];if(!ai)return;
@@ -4662,226 +5424,56 @@ function aiTick(){
   aiState.serveAt=0;
   const onSide=ball.x>nx();
   const hn=sideHits[1];
-  const aiCx=ai.x+PW/2;
   const pred=predictBall();
   const hx=humanX();
   const opp=botOpponentRead();
   const inServeGrace=Date.now()<botServeGraceUntil;
-
   if(aiState.blockCool>0)aiState.blockCool--;
-  if(botShouldBlockRead(ai,opp)){
-    ai.vy=JV*(1.03+profile.jumpBias*0.42);
+  if(aiCool>0)aiCool--;
+  const plan=botBuildPlan(ai,pred,hx,hn,onSide,opp);
+  aiState.mode=plan.mode;
+  aiState.plan=plan;
+  aiState.memory.opponentNearNet=opp.nearNet;
+  aiState.memory.opponentDeep=opp.deep;
+
+  let tx=Math.max(slotMinX(2),Math.min(slotMaxX(2)-PW,plan.moveX));
+  const moveBias=plan.mode==='receive'?1.18:plan.mode==='set'?1.08:plan.wantBlock?1.14:1.1;
+  const moveSpd=cfg.spd*profile.moveMul*moveBias*Math.max(0.74,0.92+plan.quality.timeScore*0.2-plan.imperfection.footworkLag*0.08);
+  const dx=tx-ai.x;
+  if(Math.abs(dx)>1)ai.x+=Math.sign(dx)*Math.min(moveSpd,Math.abs(dx));
+
+  const dist=Math.abs(plan.forecast.x-(ai.x+PW/2));
+  if(botShouldBlockRead(ai,plan)){
+    ai.vy=JV*(1.01+profile.jumpBias*0.34);
     ai.onGround=false;
     aiState.blocking=true;blockingSlots.add(2);updateSkillBar();
     setTimeout(()=>{aiState.blocking=false;blockingSlots.delete(2);aiState.blockCool=58;updateSkillBar();},profile.blockHold);
+  }else if(ai.onGround&&botShouldJump(ai,plan,dist)){
+    ai.vy=JV*(plan.skill==='spike'?aiTune.jumpMul:0.78);
+    ai.onGround=false;
+    if(plan.skill==='spike')spikeFired[2]=false;
   }
 
-  let tx=botTargetX(ai,pred,hx,hn,onSide);
-  if(!onSide&&ball.vx>1.9){
-    const netGuard=nx()+38;
-    tx=Math.max(tx,netGuard);
-  }
-  if(onSide&&hn===0&&ball.y<fl()-130&&Math.abs(ball.vx)>3){
-    tx+=(ball.vx>0?18:-10);
-  }
-  tx=Math.max(slotMinX(2),Math.min(slotMaxX(2)-PW,tx));
-  const dx=tx-ai.x;
-  const spikeDefenseWindow=onSide&&hn===0&&ball.vx>4.1&&ball.y<fl()-42;
-  const chaseMul=spikeDefenseWindow?1.36:onSide&&hn===0?1.22:onSide&&hn===1?1.1:(!onSide&&ball.vx>0.65?1.14:1);
-  const moveSpd=cfg.spd*profile.moveMul*(onSide&&ball.vy>0?1.08:1)*chaseMul;
-  if(Math.abs(dx)>1)ai.x+=Math.sign(dx)*Math.min(moveSpd,Math.abs(dx));
-
-  if(ai.onGround&&onSide){
-    const dist=Math.abs(ball.x-aiCx);
-    if(botShouldJump(ai,hn,onSide,dist)){ai.vy=hn>=2?JV:(hn===1?JV*0.78:JV*0.55);ai.onGround=false;}
-  }
   gravTick(ai,2);
-  const pressure=botBallPressure(ai);
-  const attack=botAttackProfile(ai,pressure,opp);
-  const emergencySaveReach=botCanReachNow(ai,'bump',spikeDefenseWindow?1.42:1.28)||botCanAssistTouch(ai,'bump');
-  const emergencySave=onSide&&hn<3&&pressure.descending&&attack.emergency&&emergencySaveReach;
+  if(inServeGrace||phase!=='playing')return;
+  if(!onSide||hn>=3)return;
 
-  if(inServeGrace){
-    return;
-  }
+  const readyForTouch=aiCool<=0||(plan.quality.underPressure&&aiCool<=1)||(plan.mode==='attack'&&plan.attackWindow.open&&aiCool<=1);
+  if(!readyForTouch)return;
 
-  if(emergencySave&&aiCool<=Math.max(0,aiTune.coolMin-2)){
-    const emergencySkill=hn===1&&!pressure.low&&pressure.high&&Math.random()<profile.receiveSetChance*0.24?'set':'bump';
-    const emergencyPwr=Math.max(0.8,cfg.pwr());
-    if(!botAssistTouch(ai,emergencySkill,emergencyPwr,hn,hx,pressure,attack)){
-      doHitLocal(2,emergencyPwr,emergencySkill);
-      botShapeContact(emergencySkill,hn,hx,pressure,attack);
-    }
-    aiCool=Math.max(3,aiTune.coolMin-2);
-    return;
-  }
+  const rangeSkill=plan.skill==='spike'?'spike':plan.skill==='set'?'set':'bump';
+  const canTouch=botCanReachNow(ai,rangeSkill,plan.mode==='receive'?1.28:plan.mode==='set'?1.18:1.12)||botCanAssistPlannedTouch(ai,plan);
+  if(!canTouch)return;
 
-  if(onSide&&hn===0&&aiCool<=Math.max(0,aiTune.coolMin-2)&&(botCanReachNow(ai,'bump',1.38)||botCanAssistTouch(ai,'bump'))){
-    const firstSkill=chooseBotSkill(0,ai,hx);
-    const firstPwr=Math.max(0.82,cfg.pwr());
-    if(!botAssistTouch(ai,firstSkill,firstPwr,0,hx,pressure,attack)){
-      doHitLocal(2,firstPwr,firstSkill);
-      botShapeContact(firstSkill,0,hx,pressure,attack);
-    }
-    aiCool=Math.max(3,aiTune.coolMin-2);
-    return;
-  }
-
-  if(onSide&&hn===1&&aiCool<=Math.max(0,aiTune.coolMin-2)&&(botCanReachNow(ai,'set',1.16)||botCanAssistTouch(ai,'set'))){
-    const secondSkill=chooseBotSkill(1,ai,hx);
-    if(secondSkill==='set'&&attack.cleanSet&&inRangeForSkill(2,'set')){
-      doHitLocal(2,Math.max(0.84,cfg.pwr()),'set');
-      botShapeContact('set',1,hx,pressure,attack);
-      aiCool=Math.max(3,aiTune.coolMin-2);
-      return;
-    }
-    if(secondSkill==='set'&&botAssistTouch(ai,'set',Math.max(0.84,cfg.pwr()),1,hx,pressure,attack)){
-      aiCool=Math.max(3,aiTune.coolMin-2);
-      return;
-    }
-    if(secondSkill==='tip'&&inRangeForSkill(2,'tip')){
-      doHitLocal(2,Math.max(0.8,cfg.pwr()),'tip');
-      botAttackNudge('tip',humanX());
-      maybeTriggerBotTrick('tip');
-      aiCool=Math.max(4,aiTune.coolMin-1);
-      return;
-    }
-    if(botCanReachNow(ai,'bump',1.2)||botCanAssistTouch(ai,'bump')){
-      const bumpPwr=Math.max(0.8,cfg.pwr());
-      if(!botAssistTouch(ai,'bump',bumpPwr,1,hx,pressure,attack)){
-        doHitLocal(2,bumpPwr,'bump');
-        botShapeContact('bump',1,hx,pressure,attack);
-      }
-      aiCool=Math.max(3,aiTune.coolMin-2);
-      return;
-    }
-  }
-
-  if(onSide&&hn>=2&&phase==='playing'&&aiCool<=0){
-    const thirdSkill=chooseBotSkill(hn,ai,hx);
-    const dist3=Math.abs(ball.x-(ai.x+PW/2));
-    if(thirdSkill==='spike'){
-      if(ai.onGround&&pressure.high&&ball.y<fl()-aiTune.forceTopGap&&ball.y>nt()+18&&dist3<aiTune.forceDist&&Math.random()<aiTune.thirdChance){
-        ai.vy=JV*aiTune.jumpMul;
-        ai.onGround=false;
-        spikeFired[2]=false;
-      }
-      if(!ai.onGround&&inRangeForSkill(2,'spike')){
-        doHitLocal(2,Math.max(aiTune.pwrFloor,cfg.pwr()),'spike');
-        botAttackNudge('spike',humanX());
-        maybeTriggerBotTrick('spike');
-        aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
-        return;
-      }
-      if(botAssistTouch(ai,'spike',Math.max(aiTune.pwrFloor,cfg.pwr()),hn,hx,pressure,attack)){
-        aiCool=profile.key==='hard'?10:profile.key==='med'?12:15;
-        return;
-      }
-      if(inRangeForSkill(2,'tip')&&attack.tipLane){
-        doHitLocal(2,Math.max(0.82,cfg.pwr()),'tip');
-        botAttackNudge('tip',humanX());
-        maybeTriggerBotTrick('tip');
-        aiCool=Math.max(4,aiTune.coolMin);
-        return;
-      }
-      if(botCanReachNow(ai,'bump',1.22)||botCanAssistTouch(ai,'bump')){
-        const lateBumpPwr=Math.max(0.82,cfg.pwr());
-        if(!botAssistTouch(ai,'bump',lateBumpPwr,hn,hx,pressure,attack)){
-          doHitLocal(2,lateBumpPwr,'bump');
-          botShapeContact('bump',hn,hx,pressure,attack);
-        }
-        aiCool=Math.max(4,aiTune.coolMin);
-        return;
-      }
-    }
-    if(thirdSkill==='tip'&&inRangeForSkill(2,'tip')){
-      doHitLocal(2,Math.max(0.82,cfg.pwr()),'tip');
-      botAttackNudge('tip',humanX());
-      maybeTriggerBotTrick('tip');
-      aiCool=Math.max(4,aiTune.coolMin);
-      return;
-    }
-    if(botCanReachNow(ai,'bump',1.24)||botCanAssistTouch(ai,'bump')){
-      const savePwr=Math.max(0.82,cfg.pwr());
-      if(!botAssistTouch(ai,'bump',savePwr,hn,hx,pressure,attack)){
-        doHitLocal(2,savePwr,'bump');
-        botShapeContact('bump',hn,hx,pressure,attack);
-      }
-      aiCool=Math.max(4,aiTune.coolMin);
-      return;
-    }
-  }
-
-  if(aiCool>0&&!onSide){
-    aiCool--;
-    return;
-  }
-  if(!onSide||sideHits[1]>=3)return;
-  if(Math.random()>(cfg.sc+profile.contactBonus))return;
-  if(!botCanReachNow(ai,'bump',1.18))return;
-
-  const captHn=sideHits[1];
-  const skill=chooseBotSkill(captHn,ai,hx);
-  if(skill==='spike'&&ai.onGround&&captHn>=2&&pressure.high){
+  if(plan.skill==='spike'&&ai.onGround&&!botCanAssistPlannedTouch(ai,plan)){
     ai.vy=JV*aiTune.jumpMul;
     ai.onGround=false;
     spikeFired[2]=false;
+    aiCool=Math.max(1,aiTune.coolMin-3);
+    return;
   }
 
-  const captSkill=skill;
-  const delay=profile.key==='easy'
-    ?cfg.ms+Math.random()*aiTune.delayJitter
-    :Math.random()*(profile.key==='med'?8:4);
-  setTimeout(()=>{
-    if(phase!=='playing'||sideHits[1]!==captHn||ball.x<=nx())return;
-    let resolvedSkill=captSkill;
-    if(resolvedSkill==='set'&&!inRangeForSkill(2,'set')){
-      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
-      else return;
-    }
-    if(resolvedSkill==='spike'){
-      if(PL[2]&&PL[2].onGround){
-        const cleanLift=ball.y<fl()-110&&Math.abs(ball.x-(PL[2].x+PW/2))<140;
-        if(cleanLift){
-          PL[2].vy=JV*aiTune.jumpMul;
-          PL[2].onGround=false;
-          spikeFired[2]=false;
-        }else if(inRangeForSkill(2,'tip'))resolvedSkill='tip';
-        else resolvedSkill='bump';
-      }
-      if(resolvedSkill==='spike'&&!isAirborne(PL[2])){
-        const botNow=PL[2];
-        const latePressure=botNow?botBallPressure(botNow):null;
-        const lateAttack=botNow&&latePressure?botAttackProfile(botNow,latePressure,botOpponentRead()):null;
-        if(botNow&&latePressure&&lateAttack&&botAssistTouch(botNow,'spike',Math.max(aiTune.pwrFloor,cfg.pwr()),captHn,humanX(),latePressure,lateAttack))return;
-        if(inRangeForSkill(2,'tip'))resolvedSkill='tip';
-        else resolvedSkill='bump';
-      }
-    }
-    if(resolvedSkill==='tip'&&!inRangeForSkill(2,'tip')){
-      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
-      else return;
-    }
-    if(resolvedSkill!=='spike'&&resolvedSkill!=='set'&&!inRangeForSkill(2,resolvedSkill)){
-      if(inRangeForSkill(2,'bump'))resolvedSkill='bump';
-      else return;
-    }
-    const hitPower=resolvedSkill==='spike'
-      ?Math.max(aiTune.pwrFloor,cfg.pwr())
-      :resolvedSkill==='set'
-        ?Math.max(0.84,cfg.pwr())
-        :Math.max(0.78,cfg.pwr());
-    doHitLocal(2,hitPower,resolvedSkill);
-    const botNow=PL[2];
-    if(botNow){
-      const latePressure=botBallPressure(botNow);
-      const lateAttack=botAttackProfile(botNow,latePressure,botOpponentRead());
-      botShapeContact(resolvedSkill,captHn,humanX(),latePressure,lateAttack);
-    }
-    botAttackNudge(resolvedSkill,humanX());
-    maybeTriggerBotTrick(resolvedSkill);
-  },delay);
-  aiCool=aiTune.coolMin+Math.floor(Math.random()*aiTune.coolVar);
+  botPerformPlannedTouch(ai,plan,hn,cfg,aiTune);
 }
 function awardLocal(losingSide){
   if(phase!=='playing')return;
@@ -4970,8 +5562,7 @@ function resetPositions(){
   ballTrail=[];
   botTrickUntil=0;
   botServeGraceUntil=0;
-  aiState.trickUsed=false;
-  aiState.serveAt=0;
+  aiState=createAiState();
 }
 
 // ── LAUNCH ────────────────────────────────────────────────────────────────
@@ -4987,7 +5578,7 @@ function launchGame(mode,lm){
   oracleUsedThisMatch=false;
   mirageUsedBySlot=[false,false,false,false];
   webTrapUntil=[0,0,0,0];
-  aiState={blocking:false,blockCool:0,jumpScheduled:false,trickUsed:false,serveAt:0};
+  aiState=createAiState();
   score=[0,0];sets=[0,0];serving=0;sideHits=[0,0];lastHitSide=-1;rallyHits=0;lastHitSlot=-1;
   localStats={spikes:[0,0],blocks:[0,0],aces:[0,0],longestRally:0};
   PL=[null,null,null,null];
@@ -5187,19 +5778,30 @@ function equippedCosmeticForSlot(slot,cosmeticSlot){
   return id?cosmeticById(id):null;
 }
 
-function drawAccessoryShoes(c,top,shoeCos,pulse,p){
+function drawAccessoryShoes(c,top,shoeCos,pulse,p,anchors=null){
   if(!shoeCos)return;
   const glow=shoeCos.id==='SHOES_SPEED'?'#ff5ca8':'#7ce7ff';
   const sole=shoeCos.id==='SHOES_SPEED'?'#fff0f8':'#e8fbff';
   const accent=shoeCos.id==='SHOES_SPEED'?'#ffd0ef':'#d8fbff';
-  const streak=Math.min(1.5,Math.abs(p.vx||0)/5.4);
+  const streak=Math.min(1.5,Math.abs((p&&p.vx)||0)/5.4);
   const bob=Math.sin(pulse*2.2)*1.8;
-  [
-    {x:c-4.8,w:12,tilt:-1},
-    {x:c+5.8,w:12,tilt:1}
-  ].forEach((shoe,i)=>{
+  const shoes=(Array.isArray(anchors)&&anchors.length===2)
+    ?anchors.map((anchor,i)=>({
+      x:anchor.x,
+      y:anchor.y,
+      angle:anchor.angle||0,
+      w:12,
+      tilt:i===0?-1:1,
+      dynamic:true
+    }))
+    :[
+      {x:c-4.8,y:top+PH-4,w:12,tilt:-1,angle:0,dynamic:false},
+      {x:c+5.8,y:top+PH-4,w:12,tilt:1,angle:0,dynamic:false}
+    ];
+  shoes.forEach((shoe,i)=>{
     cx.save();
-    cx.translate(shoe.x,top+PH-4+bob*(i?-.4:.4));
+    cx.translate(shoe.x,shoe.y+(shoe.dynamic?0:bob*(i?-.4:.4)));
+    if(shoe.angle)cx.rotate(shoe.angle);
     cx.shadowColor=glow;
     cx.shadowBlur=12+streak*8;
     cx.fillStyle=glow;
@@ -5305,10 +5907,10 @@ function drawAccessoryHeadband(c,top,headCos,pulse){
   cx.restore();
 }
 
-function drawAccessoryArmband(c,top,armCos,pulse){
+function drawAccessoryArmband(c,top,armCos,pulse,anchor=null){
   if(!armCos)return;
-  const armX=c+PW/2+3.5;
-  const armY=top+16;
+  const armX=anchor&&Number.isFinite(anchor.x)?anchor.x:c+PW/2+3.5;
+  const armY=anchor&&Number.isFinite(anchor.y)?anchor.y:top+16;
   if(armCos.id==='MIRAGE_ARM'){
     const cyan='#7ce7ff';
     const steelA='#93a7c2';
@@ -5391,22 +5993,11 @@ function drawPlayer(p,col,dark,slot){
   const shoeCos=equippedCosmeticForSlot(slot,'shoes');
   const headCos=equippedCosmeticForSlot(slot,'headband');
   const armCos=equippedCosmeticForSlot(slot,'armband');
-  const hasMirageArm=!!(armCos&&armCos.id==='MIRAGE_ARM');
+  const anim=updatePlayerAnimState(p,slot);
+  const animPack=buildPlayerPose(p,slot,anim);
   cx.save();cx.globalAlpha=.22;cx.fillStyle='#000';
   cx.beginPath();cx.ellipse(c,fl()-1,PW*1.3,5,0,0,Math.PI*2);cx.fill();cx.restore();
-  cx.fillStyle=dark;cx.fillRect(c-7,top+PH*.55,6,PH*.45);cx.fillRect(c+1,top+PH*.55,6,PH*.45);
-  cx.fillStyle='#111';cx.fillRect(c-9,top+PH-5,9,5);cx.fillRect(c+1,top+PH-5,9,5);
-  drawAccessoryShoes(c,top,shoeCos,pulse,p);
-  cx.shadowColor=col;cx.shadowBlur=10;
-  cx.fillStyle=col;cx.beginPath();cx.roundRect(c-PW/2-1,top+14,PW+2,PH*.5,3);cx.fill();
-  cx.shadowBlur=0;
-  cx.fillStyle='rgba(255,255,255,.3)';cx.fillRect(c-3,top+16,6,PH*.42);
-  cx.fillStyle='#f5d5a0';cx.fillRect(c-PW/2-7,top+16,7,PH*.3);if(!hasMirageArm)cx.fillRect(c+PW/2,top+16,7,PH*.3);
-  drawAccessoryArmband(c,top,armCos,pulse);
-  cx.fillStyle='#f5d5a0';cx.beginPath();cx.arc(c,top+9,10,0,Math.PI*2);cx.fill();
-  drawAccessoryHeadband(c,top,headCos,pulse);
-  cx.fillStyle='#4a2e10';cx.beginPath();cx.arc(c,top+4,9,Math.PI,Math.PI*2);cx.fill();cx.fillRect(c-9,top+4,18,4);
-  cx.fillStyle='#111';cx.beginPath();cx.arc(c-3,top+9,1.5,0,Math.PI*2);cx.fill();cx.beginPath();cx.arc(c+3,top+9,1.5,0,Math.PI*2);cx.fill();
+  drawPlayerBody(c,top,slot,col,dark,p,animPack,shoeCos,headCos,armCos,pulse);
 }
 
 function drawWebTrap(p){
